@@ -1,0 +1,99 @@
+# Contrato inicial da API
+
+Este documento delimita a superfície HTTP do MVP. A especificação OpenAPI será
+a fonte executável do contrato quando a implementação começar.
+
+## Convenções
+
+- Prefixo de versão: `/v1`.
+- Corpos de requisição e resposta: JSON.
+- Valores monetários: inteiros na menor unidade da moeda.
+- Moedas: código explícito, inicialmente `BRL`.
+- Identificadores públicos: opacos e não sequenciais.
+- Escritas repetíveis: header `Idempotency-Key` obrigatório.
+- Erros: estrutura consistente com código, mensagem e identificador de
+  correlação.
+
+O prefixo `/v1` identifica a primeira geração do contrato HTTP. Enquanto o
+projeto estiver na série `v0.x`, ele permanece experimental e pode sofrer
+mudanças incompatíveis entre versões minor. Consulte a
+[política de versionamento](versioning.md).
+
+## Endpoints
+
+### `POST /v1/orders`
+
+Cria um pedido a partir de um produto conhecido pelo servidor. O cliente não
+define livremente o valor que será cobrado.
+
+```json
+{
+  "productId": "product_demo",
+  "quantity": 1
+}
+```
+
+```json
+{
+  "id": "ord_01J...",
+  "status": "pending",
+  "amount": 10000,
+  "currency": "BRL"
+}
+```
+
+### `POST /v1/orders/{orderId}/checkout`
+
+Cria ou recupera de forma idempotente uma sessão hospedada no provedor.
+
+```json
+{
+  "checkoutUrl": "https://checkout.stripe.com/c/pay/...",
+  "expiresAt": "2026-09-05T18:00:00Z"
+}
+```
+
+### `GET /v1/orders/{orderId}`
+
+Retorna o estado conhecido pela API. Este é o endpoint que o sistema integrador
+usa depois que o consumidor inicia ou conclui o checkout.
+
+```json
+{
+  "id": "ord_01J...",
+  "status": "succeeded",
+  "amount": 10000,
+  "currency": "BRL"
+}
+```
+
+### `POST /v1/webhooks/stripe`
+
+Recebe eventos assinados pela Stripe. Não é um endpoint destinado ao sistema
+integrador. O header `Stripe-Signature` deve ser verificado sobre o corpo bruto
+antes que o evento seja aceito e persistido.
+
+O Swagger documentará esse endpoint, mas não tentará fabricar assinaturas
+válidas. Os testes serão feitos com a Stripe CLI e fixtures controladas.
+
+O mapeamento dos eventos está documentado no
+[plano da integração com Stripe](providers/stripe.md).
+
+### `GET /health`
+
+Indica se o processo está disponível. A definição de readiness e a exposição de
+detalhes das dependências serão decididas com a infraestrutura.
+
+### `GET /docs`
+
+Expõe o Swagger UI gerado a partir do contrato OpenAPI versionado.
+
+## Fora do contrato da versão 0.1
+
+- Clientes e autenticação de consumidores.
+- Catálogo público ou gerenciamento de produtos.
+- Reembolsos.
+- Assinaturas.
+- Operações administrativas.
+- Relatórios e conciliação.
+- Upload ou captura de dados de cartão.
