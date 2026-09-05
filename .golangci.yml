@@ -1,0 +1,27 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - noctx
+    - revive
+  exclusions:
+    paths:
+      - internal/adapters/postgres/queries
+      - internal/transport/http/openapi
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    paths:
+      - internal/adapters/postgres/queries
+      - internal/transport/http/openapi
+

@@ -1,0 +1,45 @@
+openapi: 3.1.0
+info:
+  title: Payments Boilerplate API
+  version: 0.1.0
+  description: API headless de referencia para integracoes de pagamento.
+servers:
+  - url: /
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Retorna a disponibilidade do processo e de suas dependencias.
+      tags: [Operations]
+      responses:
+        "200":
+          description: Processo pronto para receber trabalho.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Uma dependencia obrigatoria esta indisponivel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, service, version, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+        service:
+          type: string
+        version:
+          type: string
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [up, down]
+

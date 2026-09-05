@@ -16,7 +16,7 @@ e, quando alterarem uma decisão estrutural, registradas em um ADR.
 - Valores monetários usam inteiros na menor unidade da moeda, nunca ponto
   flutuante.
 - Instantes são persistidos e transmitidos em UTC.
-- Logs são estruturados com `slog` e usam identificadores de correlação.
+- Logs são estruturados com Zap e usam identificadores de correlação.
 - `go.mod` e `go.sum` são versionados no repositório.
 
 ## Organização
@@ -26,6 +26,7 @@ cmd/          pontos de entrada dos binários
 internal/     domínio, casos de uso e adapters privados
 api/          contrato OpenAPI
 db/           migrations e queries
+deployments/  configuração específica de ambientes
 docs/         documentação e decisões
 tests/        testes que atravessam mais de um pacote
 ```
@@ -54,10 +55,15 @@ pelos casos de uso.
 ## PostgreSQL
 
 - Migrations publicadas são imutáveis; correções usam uma nova migration.
+- Goose é a única autoridade de migrations; `AutoMigrate` não é usado.
 - Nomes de tabelas, colunas e constraints usam `snake_case`.
 - Constraints do banco protegem unicidade, idempotência e referências.
 - Mudanças destrutivas seguem a sequência `expand`, `migrate`, `contract`.
 - Queries relevantes devem ser explícitas e gerar tipos por meio do `sqlc`.
+- GORM é usado para CRUD comum; locks, inbox, outbox, deduplicação e transições
+  condicionais usam SQL explícito com `sqlc`.
+- Models do GORM não são entidades do domínio e hooks não contêm regras de
+  negócio.
 - O schema do banco é interno e não deve ser consumido diretamente por
   integradores.
 - Transações devem ser curtas e não manter locks enquanto chamam serviços
@@ -81,6 +87,8 @@ pelos casos de uso.
 ## Logs, métricas e traces
 
 - Logs devem ser estruturados e conter nível, mensagem e correlação.
+- Produção usa logs JSON; desenvolvimento pode usar formato de console.
+- Traces e métricas usam OpenTelemetry e exportação OTLP.
 - Secrets, credenciais e instrumentos de pagamento nunca aparecem em logs.
 - IDs de negócio podem aparecer em logs controlados e traces, mas não como
   labels de métricas.
@@ -139,4 +147,3 @@ BREAKING CHANGE: checkoutUrl replaces redirectUrl.
 ```
 
 Referência: [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/).
-

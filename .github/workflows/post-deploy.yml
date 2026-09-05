@@ -1,0 +1,24 @@
+name: Post-deploy
+
+on:
+  deployment_status:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Railway smoke test
+    if: >-
+      github.event.deployment_status.state == 'success' &&
+      github.event.deployment.environment == 'production'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify API readiness
+        env:
+          API_URL: ${{ vars.RAILWAY_API_URL }}
+        run: |
+          test -n "${API_URL}"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            "${API_URL%/}/health"
+

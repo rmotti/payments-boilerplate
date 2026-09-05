@@ -11,9 +11,60 @@ não será um gateway, uma instituição financeira nem um sistema que captura o
 armazena dados completos de cartão.
 
 > [!IMPORTANT]
-> O projeto está na fase de definição. Ainda não existe uma versão pronta para
+> O projeto está na fase de fundação executável. Ainda não existe uma versão pronta para
 > produção e o uso deste código não garante conformidade com PCI DSS, LGPD ou
 > qualquer outra obrigação regulatória.
+
+## Desenvolvimento local
+
+Pré-requisitos:
+
+- Go 1.26 ou 1.27;
+- Docker com Docker Compose;
+- Make, opcional, para os atalhos documentados.
+
+Prepare a configuração e as dependências:
+
+```bash
+cp .env.example .env
+make infra-up
+make migrate-up
+make generate
+```
+
+Execute API e worker em terminais separados:
+
+```bash
+make run-api
+make run-worker
+```
+
+A API fica disponível em `http://localhost:8080`, a documentação em
+`http://localhost:8080/docs/` e o painel local do RabbitMQ em
+`http://localhost:15672`.
+
+Valide a API sem abrir o navegador:
+
+```bash
+curl --fail --show-error http://localhost:8080/health
+curl --fail --show-error http://localhost:8080/openapi.yaml
+```
+
+Para incluir o ambiente de observabilidade:
+
+```bash
+docker compose --profile observability up -d
+```
+
+O Grafana fica disponível em `http://localhost:3000`. Consulte a
+[estrutura do projeto](docs/project-structure.md) para entender as fronteiras
+dos pacotes.
+
+Os mesmos processos podem ser executados inteiramente em containers:
+
+```bash
+docker compose --profile app up --build
+```
 
 ## Objetivos
 
@@ -116,11 +167,11 @@ o Swagger UI representa no diagrama.
 | Contrato da API | OpenAPI contract-first |
 | Geração de código | `oapi-codegen` strict server |
 | Banco de dados | PostgreSQL |
-| Acesso ao banco | `pgx` + `sqlc` |
+| Acesso ao banco | `pgx` + GORM para CRUD + `sqlc` para SQL crítico |
 | Mensageria | RabbitMQ |
 | Confiabilidade de publicação | Transactional outbox |
 | Provedor | Stripe Checkout hospedado |
-| Logs | `slog` |
+| Logs | Zap |
 | Métricas e traces | OpenTelemetry |
 | Empacotamento local | Docker Compose |
 
@@ -134,12 +185,17 @@ o Swagger UI representa no diagrama.
 - [Versionamento](docs/versioning.md)
 - [Métricas prioritárias](docs/metrics.md)
 - [Roadmap](docs/roadmap.md)
+- [Estrutura e responsabilidades dos diretórios](docs/project-structure.md)
+- [Deploy na Railway](docs/deployment/railway.md)
 - [Decisão arquitetural: limites do produto](docs/decisions/0001-project-boundaries.md)
 - [Decisão arquitetural: API headless](docs/decisions/0002-headless-api.md)
 - [Decisão arquitetural: Go e RabbitMQ](docs/decisions/0003-go-rabbitmq.md)
 - [Decisão arquitetural: licença](docs/decisions/0004-apache-license.md)
 - [Decisão arquitetural: convenções, versionamento e suporte](docs/decisions/0005-conventions-versioning-support.md)
 - [Decisão arquitetural: Stripe como primeiro provedor](docs/decisions/0006-stripe-first-provider.md)
+- [Decisão arquitetural: GORM e sqlc](docs/decisions/0007-gorm-and-sqlc.md)
+- [Decisão arquitetural: Zap e OpenTelemetry](docs/decisions/0008-observability-stack.md)
+- [Decisão arquitetural: Railway](docs/decisions/0009-railway-deployment.md)
 - [Guia de contribuição](CONTRIBUTING.md)
 - [Política de suporte](SUPPORT.md)
 - [Changelog](CHANGELOG.md)

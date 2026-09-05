@@ -175,6 +175,8 @@ cmd/
     main.go
   worker/
     main.go
+  migrate/
+    main.go
 internal/
   domain/
     orders/
@@ -187,6 +189,11 @@ internal/
       stripe/
   transport/
     http/
+  platform/
+    config/
+    database/
+    logging/
+    telemetry/
 api/
   openapi.yaml
 db/
@@ -195,6 +202,21 @@ db/
 docs/
 tests/
 ```
+
+GORM atende CRUD comum, enquanto `sqlc` gera queries nas quais locks,
+concorrência ou a forma exata do SQL fazem parte da garantia. Goose é a única
+autoridade de migrations e o projeto não usa `AutoMigrate`.
+
+## Implantação inicial
+
+O primeiro destino documentado é a Railway. API e worker são serviços
+independentes construídos da mesma imagem; somente a API recebe domínio público.
+PostgreSQL e RabbitMQ permanecem na rede privada do projeto, e o broker usa
+volume persistente. Migrations rodam como etapa anterior ao deploy da API.
+
+O ambiente local pode habilitar Grafana, Prometheus, Tempo, Loki e o Collector
+por meio do profile de observabilidade do Docker Compose. Em produção, o destino
+OTLP é configuração externa e não faz parte do domínio.
 
 Depois de uma implementação real e estável, as fronteiras reutilizáveis podem
 ser extraídas:

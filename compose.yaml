@@ -1,0 +1,96 @@
+name: payments-boilerplate
+
+services:
+  postgres:
+    image: postgres:18.6
+    environment:
+      POSTGRES_DB: payments
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: payments_local
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  rabbitmq:
+    image: rabbitmq:4.3.5-management
+    environment:
+      RABBITMQ_DEFAULT_USER: payments
+      RABBITMQ_DEFAULT_PASS: payments_local
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  observability:
+    image: grafana/otel-lgtm:0.30.0
+    profiles: ["observability"]
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+      - "${OTLP_GRPC_PORT:-4317}:4317"
+      - "${OTLP_HTTP_PORT:-4318}:4318"
+
+  migrate:
+    profiles: ["app"]
+    build:
+      context: .
+    command: ["/app/migrate", "up"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgres://payments:payments_local@postgres:5432/payments?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    profiles: ["app"]
+    build:
+      context: .
+    command: ["/app/api"]
+    environment:
+      APP_ENV: development
+      PORT: "8080"
+      DATABASE_URL: postgres://payments:payments_local@postgres:5432/payments?sslmode=disable
+      LOG_FORMAT: json
+      OTEL_ENABLED: "false"
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: .
+    command: ["/app/worker"]
+    environment:
+      APP_ENV: development
+      PORT: "8081"
+      DATABASE_URL: postgres://payments:payments_local@postgres:5432/payments?sslmode=disable
+      RABBITMQ_URL: amqp://payments:payments_local@rabbitmq:5672/
+      LOG_FORMAT: json
+      OTEL_ENABLED: "false"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+

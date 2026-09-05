@@ -18,15 +18,23 @@ múltiplos provedores.
 - [x] Adotar Semantic Versioning e definir a série experimental `v0.x`.
 - [x] Definir suporte à minor mais recente em melhor esforço e sem SLA.
 - [x] Escolher Stripe Checkout como primeiro provedor de pagamentos.
+- [x] Definir GORM para CRUD e `sqlc` para SQL crítico.
+- [x] Definir Zap e OpenTelemetry como stack de observabilidade.
+- [x] Escolher Railway como primeiro destino documentado de deploy.
 
 ## Fase 1 — Fundação executável
 
-- [ ] Criar módulo Go e comandos `api` e `worker`.
-- [ ] Criar contrato OpenAPI e gerar o strict server.
-- [ ] Configurar PostgreSQL e RabbitMQ no Docker Compose.
-- [ ] Configurar migrations e geração de queries com `sqlc`.
-- [ ] Implementar health checks e shutdown gracioso.
-- [ ] Publicar Swagger UI e exemplos equivalentes com `curl`.
+- [x] Criar módulo Go e comandos `api` e `worker`.
+- [x] Criar contrato OpenAPI e gerar o strict server.
+- [x] Configurar PostgreSQL e RabbitMQ no Docker Compose.
+- [x] Configurar migrations e geração de queries com `sqlc`.
+- [x] Configurar GORM sem `AutoMigrate` sobre o mesmo driver PostgreSQL.
+- [x] Configurar carregamento e validação de variáveis de ambiente.
+- [x] Configurar logs estruturados, traces e métricas.
+- [x] Implementar health checks e shutdown gracioso.
+- [x] Publicar Swagger UI e exemplos equivalentes com `curl`.
+- [x] Configurar CI, análise de segurança e publicação de releases.
+- [x] Documentar o primeiro deploy na Railway.
 
 ## Fase 2 — Primeiro pagamento vertical
 
