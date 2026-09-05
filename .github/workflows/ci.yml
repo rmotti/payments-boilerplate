@@ -42,9 +42,6 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Lint
-        run: go tool golangci-lint run
-
       - name: Test with race detector
         run: go test -race -coverprofile=coverage.out ./...
 
@@ -53,6 +50,18 @@ jobs:
 
       - name: Build commands
         run: go build ./cmd/...
+
+      # golangci-lint v2.12.2 does not support Go 1.27 syntax yet. Keep the
+      # application checks above on Go 1.27 and run only the linter with the
+      # module's minimum supported Go version.
+      - name: Set up Go for lint
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+          cache: true
+
+      - name: Lint
+        run: go tool golangci-lint run
 
       - name: Validate Compose
         run: docker compose config --quiet
@@ -90,4 +99,3 @@ jobs:
           context: .
           push: false
           tags: payments-boilerplate:ci
-
