@@ -61,11 +61,15 @@ usa depois que o consumidor inicia ou conclui o checkout.
 ```json
 {
   "id": "ord_01J...",
-  "status": "succeeded",
+  "status": "paid",
   "amount": 10000,
   "currency": "BRL"
 }
 ```
+
+O `status` do pedido usa vocabulario comercial (`pending`, `paid`, `cancelled`,
+`expired`) e nao os estados financeiros da cobranca. Uma tentativa recusada nao
+altera o pedido, que permanece `pending` ate ser pago, cancelado ou expirado.
 
 ### `POST /v1/webhooks/stripe`
 

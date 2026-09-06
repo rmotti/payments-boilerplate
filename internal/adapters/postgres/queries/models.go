@@ -3,3 +3,63 @@
 //   sqlc v1.31.1
 
 package dbgen
+
+import (
+	"database/sql"
+	"encoding/json"
+	"time"
+)
+
+type Order struct {
+	ID             string
+	Status         string
+	Amount         int64
+	Currency       string
+	ProductID      string
+	Quantity       int32
+	IdempotencyKey string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type Payment struct {
+	ID        string
+	OrderID   string
+	Provider  string
+	Status    string
+	Amount    int64
+	Currency  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type PaymentAttempt struct {
+	ID                      string
+	PaymentID               string
+	Provider                string
+	Status                  string
+	IdempotencyKey          string
+	ProviderSessionID       sql.NullString
+	ProviderPaymentIntentID sql.NullString
+	CheckoutUrl             sql.NullString
+	ExpiresAt               sql.NullTime
+	FailureCode             sql.NullString
+	FailureMessage          sql.NullString
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+}
+
+type WebhookEvent struct {
+	ID              string
+	Provider        string
+	ProviderEventID string
+	EventType       string
+	RawPayload      []byte
+	Payload         json.RawMessage
+	Status          string
+	Attempts        int32
+	ReceivedAt      time.Time
+	ProcessedAt     sql.NullTime
+	LastError       sql.NullString
+	UpdatedAt       time.Time
+}

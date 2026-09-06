@@ -138,7 +138,7 @@ sequenceDiagram
     Worker-->>MQ: Confirma o processamento
     Dev->>Docs: Consulta o pedido
     Docs->>API: GET /v1/orders/{orderId}
-    API-->>Docs: Retorna status succeeded
+    API-->>Docs: Retorna status paid
 ```
 
 Em uma integração real, o sistema da pessoa desenvolvedora fará as chamadas que

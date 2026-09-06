@@ -94,7 +94,7 @@ fluxo para Pix e outros métodos assíncronos.
 ## Testes de aceitação
 
 - Criar um pedido e abrir sua Checkout Session hospedada.
-- Concluir um cartão de teste e observar o pedido chegar a `succeeded`.
+- Concluir um cartão de teste e observar o pedido chegar a `paid`.
 - Repetir a criação com a mesma idempotency key sem criar outra sessão.
 - Rejeitar assinatura ausente ou inválida.
 - Receber duas vezes o mesmo evento sem duplicar efeitos.
