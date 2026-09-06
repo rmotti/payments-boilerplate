@@ -38,7 +38,7 @@ múltiplos provedores.
 
 ## Fase 2 — Primeiro pagamento vertical
 
-- [ ] Criar esquema de `Order`, `Payment`, `PaymentAttempt` e `WebhookEvent`.
+- [x] Criar esquema de `Order`, `Payment`, `PaymentAttempt` e `WebhookEvent`.
 - [ ] Criar pedido com valor calculado no servidor.
 - [ ] Integrar Stripe Checkout hospedado em sandbox com cartão em BRL.
 - [ ] Implementar idempotência da criação.
