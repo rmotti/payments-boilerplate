@@ -24,9 +24,14 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Modelo de acesso self-hosted e single-integrator, com autenticação por API key
   protegendo as rotas de negócio por padrão, rotação de credenciais e health
   público.
-- Stripe Checkout hospedado para cartão em BRL, com sessão ligada a `Payment` e
-  `PaymentAttempt`, proteção contra checkouts concorrentes e persistência da URL
-  antes da resposta, validado por um pagamento completo no sandbox.
+- Stripe Checkout hospedado para cartão e Pix em BRL, com sessão ligada a
+  `Payment` e `PaymentAttempt`, proteção contra checkouts concorrentes e
+  persistência da URL antes da resposta, validado por um pagamento completo no
+  sandbox.
+- Inspeção autenticada de metadados da inbox/outbox e replay atômico de trabalho
+  com falha, reutilizando a mensagem original e mantendo contador de replay.
+- Validação automatizada do fluxo Pix de `processing` até `paid` após o evento
+  `checkout.session.async_payment_succeeded`.
 - Idempotência transparente em criação de pedidos e checkouts, além de
   `GET /v1/orders/{orderId}` para consultar o estado local.
 - `POST /v1/webhooks/stripe`, público na rede e autenticado pela verificação da

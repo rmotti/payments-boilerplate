@@ -56,8 +56,8 @@ provedor.
 
 - Criação de um pedido com valor e moeda definidos no servidor.
 - Início de Stripe Checkout hospedado em modo de pagamento único.
-- Pagamento por cartão em BRL; Pix será habilitado depois que o processamento
-  assíncrono estiver validado.
+- Pagamento por cartão e Pix em BRL; a confirmação tardia do Pix usa o mesmo
+  processamento assíncrono validado pelo worker.
 - Uso de idempotência na criação de operações remotas.
 - Autenticação do backend integrador nas rotas de negócio de uma implantação
   self-hosted e single-integrator.
@@ -132,8 +132,8 @@ provedor.
 
 - Stripe Checkout é o primeiro provedor e a página hospedada é a experiência de
   pagamento do MVP.
-- Cartão em BRL é o primeiro meio de pagamento implementado.
-- Pix permanece no escopo da versão `0.1.0`, mas entra depois da validação do
-  pipeline assíncrono, pois seu resultado pode ser confirmado posteriormente.
+- Cartão em BRL foi o primeiro meio de pagamento implementado.
+- Pix integra o escopo da versão `0.1.0` depois da validação do pipeline
+  assíncrono, que processa sua confirmação posterior.
 - Stripe Billing, Connect, Elements, assinaturas, marketplace e checkout
   embutido ou customizado estão fora dessa entrega.

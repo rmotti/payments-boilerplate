@@ -81,4 +81,6 @@ type WebhookEvent struct {
 	ProcessedAt     sql.NullTime
 	LastError       sql.NullString
 	UpdatedAt       time.Time
+	ReplayCount     int32
+	LastReplayedAt  sql.NullTime
 }

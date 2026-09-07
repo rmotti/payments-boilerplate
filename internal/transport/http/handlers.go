@@ -10,6 +10,7 @@ import (
 	paymentapp "github.com/rmotti/payments-boilerplate/internal/application/payments"
 	webhookapp "github.com/rmotti/payments-boilerplate/internal/application/webhooks"
 	orderdomain "github.com/rmotti/payments-boilerplate/internal/domain/orders"
+	webhookdomain "github.com/rmotti/payments-boilerplate/internal/domain/webhooks"
 	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/transport/http/openapi"
 )
@@ -34,12 +35,19 @@ type WebhookReceiver interface {
 	Receive(ctx context.Context, in webhookapp.ReceiveInput) (webhookapp.Outcome, error)
 }
 
+// WebhookOperations exposes non-sensitive inspection and failed-event replay.
+type WebhookOperations interface {
+	List(ctx context.Context, status webhookdomain.Status, limit int) ([]webhookapp.EventInspection, error)
+	Reprocess(ctx context.Context, eventID string) (webhookapp.EventInspection, error)
+}
+
 // APIHandler implements the generated strict OpenAPI contract.
 type APIHandler struct {
-	health    *health.Service
-	orders    OrderCreator
-	checkouts CheckoutCreator
-	webhooks  WebhookReceiver
+	health     *health.Service
+	orders     OrderCreator
+	checkouts  CheckoutCreator
+	webhooks   WebhookReceiver
+	operations WebhookOperations
 }
 
 // NewAPIHandler composes the HTTP handlers required by the OpenAPI contract.
@@ -50,8 +58,13 @@ func NewAPIHandler(
 	orders OrderCreator,
 	checkouts CheckoutCreator,
 	webhooks WebhookReceiver,
+	operations ...WebhookOperations,
 ) *APIHandler {
-	return &APIHandler{health: healthService, orders: orders, checkouts: checkouts, webhooks: webhooks}
+	handler := &APIHandler{health: healthService, orders: orders, checkouts: checkouts, webhooks: webhooks}
+	if len(operations) > 0 {
+		handler.operations = operations[0]
+	}
+	return handler
 }
 
 // GetHealth returns aggregate process readiness.
@@ -187,6 +200,85 @@ func createCheckoutError(ctx context.Context, err error) (openapi.CreateCheckout
 	default:
 		return nil, fmt.Errorf("create checkout: %w", err)
 	}
+}
+
+// ListWebhookEvents returns only operational metadata, never provider payloads.
+func (h *APIHandler) ListWebhookEvents(
+	ctx context.Context,
+	request openapi.ListWebhookEventsRequestObject,
+) (openapi.ListWebhookEventsResponseObject, error) {
+	if h.operations == nil {
+		return nil, ErrNotServed
+	}
+	status := webhookdomain.Status("")
+	if request.Params.Status != nil {
+		status = webhookdomain.Status(*request.Params.Status)
+	}
+	limit := 0
+	if request.Params.Limit != nil {
+		limit = *request.Params.Limit
+	}
+	events, err := h.operations.List(ctx, status, limit)
+	if err != nil {
+		if errors.Is(err, webhookapp.ErrInvalidStatus) || errors.Is(err, webhookapp.ErrInvalidLimit) {
+			return openapi.ListWebhookEvents400JSONResponse(newError(ctx, codeInvalidRequest, err.Error())), nil
+		}
+		return nil, fmt.Errorf("list webhook events: %w", err)
+	}
+	items := make([]openapi.WebhookEventInspection, 0, len(events))
+	for _, event := range events {
+		items = append(items, webhookEventResponse(event))
+	}
+	return openapi.ListWebhookEvents200JSONResponse{Items: items}, nil
+}
+
+// ReprocessWebhookEvent atomically returns failed work to the outbox relay.
+func (h *APIHandler) ReprocessWebhookEvent(
+	ctx context.Context,
+	request openapi.ReprocessWebhookEventRequestObject,
+) (openapi.ReprocessWebhookEventResponseObject, error) {
+	if h.operations == nil {
+		return nil, ErrNotServed
+	}
+	event, err := h.operations.Reprocess(ctx, string(request.WebhookEventId))
+	if err != nil {
+		switch {
+		case errors.Is(err, webhookapp.ErrEventNotFound):
+			return openapi.ReprocessWebhookEvent404JSONResponse(
+				newError(ctx, codeWebhookEventNotFound, webhookapp.ErrEventNotFound.Error())), nil
+		case errors.Is(err, webhookapp.ErrEventNotReplayable):
+			return openapi.ReprocessWebhookEvent409JSONResponse(
+				newError(ctx, codeWebhookEventNotReplayable, webhookapp.ErrEventNotReplayable.Error())), nil
+		default:
+			return nil, fmt.Errorf("reprocess webhook event: %w", err)
+		}
+	}
+	return openapi.ReprocessWebhookEvent202JSONResponse(webhookEventResponse(event)), nil
+}
+
+func webhookEventResponse(event webhookapp.EventInspection) openapi.WebhookEventInspection {
+	response := openapi.WebhookEventInspection{
+		Id: event.ID, Provider: string(event.Provider), ProviderEventId: event.ProviderEventID,
+		EventType: event.EventType, Status: openapi.WebhookEventStatus(event.Status),
+		Attempts: event.Attempts, ReceivedAt: event.ReceivedAt, ProcessedAt: event.ProcessedAt,
+		LastError: optionalString(event.LastError), UpdatedAt: event.UpdatedAt,
+		ReplayCount: event.ReplayCount, LastReplayedAt: event.LastReplayedAt,
+	}
+	if event.Outbox != nil {
+		response.Outbox = &openapi.OutboxInspection{
+			Id: event.Outbox.ID, Status: openapi.OutboxInspectionStatus(event.Outbox.Status),
+			Attempts: event.Outbox.Attempts, PublishedAt: event.Outbox.PublishedAt,
+			LastError: optionalString(event.Outbox.LastError), NextAttemptAt: event.Outbox.NextAttemptAt,
+		}
+	}
+	return response
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // ReceiveStripeWebhook durably accepts a signed provider event.

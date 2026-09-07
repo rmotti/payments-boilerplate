@@ -5,7 +5,8 @@ runtime atual da arquitetura-alvo da versão `0.1.0`. A API usa PostgreSQL como
 fonte de verdade, abre Stripe Checkout e já recebe webhooks assinados,
 gravando o evento e sua mensagem de outbox na mesma transação. O relay que
 publica essas mensagens e o consumer que as aplica rodam dentro do processo
-`worker`. A inspeção operacional e o Pix ainda pertencem à Fase 3.
+`worker`. A API também expõe inspeção operacional autenticada e replay seguro;
+o Checkout oferece cartão e Pix em BRL.
 
 ## Contexto
 
@@ -60,6 +61,8 @@ e consumer pertencem ao mesmo código-base.
 - Validar e armazenar eventos recebidos do provedor.
 - Criar a mensagem de outbox na mesma transação do evento.
 - Expor ao sistema integrador o estado conhecido pela API.
+- Expor metadados não sensíveis da inbox/outbox e reenfileirar atomicamente
+  apenas trabalho que falhou.
 - Publicar um contrato OpenAPI coerente com a implementação.
 
 ### Outbox relay

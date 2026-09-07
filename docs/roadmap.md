@@ -61,8 +61,8 @@ múltiplos provedores.
 - [x] Consumir com ack manual e concorrência limitada.
 - [x] Implementar retry com backoff e dead-letter queue.
 - [x] Impedir regressões inválidas de estado.
-- [ ] Permitir inspeção e reprocessamento seguro.
-- [ ] Habilitar Pix e validar a transição assíncrona até o estado final.
+- [x] Permitir inspeção e reprocessamento seguro.
+- [x] Habilitar Pix e validar a transição assíncrona até o estado final.
 
 ## Fase 4 — Qualidade para publicação
 

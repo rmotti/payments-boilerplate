@@ -189,8 +189,8 @@ inserir passaria. Fixar a garantia no índice impede que a deduplicação migre
 silenciosamente para código de aplicação, onde ela perderia corridas que hoje o
 banco vence.
 
-O relay que publica essas mensagens, o consumer e a inspeção operacional da
-inbox permanecem na Fase 3.
+O relay, o consumer e a inspeção operacional da inbox foram concluídos nas
+entregas seguintes da Fase 3.
 
 ## Referências
 

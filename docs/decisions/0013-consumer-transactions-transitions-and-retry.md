@@ -2,7 +2,7 @@
 
 - Status: aceito
 - Data: 2026-09-07
-- Implementação: em andamento na terceira entrega da Fase 3
+- Implementação: concluída na terceira entrega da Fase 3
 
 ## Contexto
 

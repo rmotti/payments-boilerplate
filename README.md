@@ -6,12 +6,13 @@ e reutilizável.
 O projeto é uma API headless escrita em Go que já cria pedidos com preço
 calculado no servidor e abre Stripe Checkout hospedado em sandbox. O contrato
 OpenAPI e o Swagger UI formam sua interface de demonstração. A confirmação por
-webhook e o processamento assíncrono durável com PostgreSQL e RabbitMQ serão
-implementados na Fase 3. O projeto não é um gateway, uma instituição financeira
+webhook e o processamento assíncrono durável com PostgreSQL e RabbitMQ estão
+implementados, incluindo inspeção, replay seguro e o caminho assíncrono do Pix.
+O projeto não é um gateway, uma instituição financeira
 nem um sistema que captura ou armazena dados completos de cartão.
 
 > [!IMPORTANT]
-> As Fases 0, 1 e 2 estão concluídas, mas ainda não existe uma versão pronta para
+> As Fases 0 a 3 estão concluídas, mas ainda não existe uma versão pronta para
 > produção. O uso deste código não garante conformidade com PCI DSS, LGPD ou
 > qualquer outra obrigação regulatória.
 
@@ -25,7 +26,7 @@ ficam em [docs/roadmap.md](docs/roadmap.md), que é a fonte de verdade.
 | Fase 0 — Definições de fundação | Concluída | Visão, limites, decisões técnicas e convenções |
 | Fase 1 — Fundação executável | Concluída | API, banco, migrations, observabilidade, CI e deploy documentado |
 | Fase 2 — Primeiro pagamento vertical | Concluída | API key, pedido idempotente, consulta e Stripe Checkout em BRL |
-| Fase 3 — Confirmação assíncrona confiável | Em andamento | Webhook, inbox/outbox, relay e consumer entregues; inspeção e Pix pendentes |
+| Fase 3 — Confirmação assíncrona confiável | Concluída | Webhook, inbox/outbox, relay, consumer, inspeção, replay seguro e Pix |
 | Fase 4 — Qualidade para publicação | Planejada | Hardening, testes de falha, métricas e guias operacionais |
 
 Um pagamento concluído na Stripe agora chega ao estado local: o webhook
@@ -112,8 +113,10 @@ curl --fail --show-error -X POST \
   -H "Idempotency-Key: $(uuidgen)"
 ```
 
-Abra a `checkoutUrl` retornada e pague no sandbox com `4242 4242 4242 4242`,
-uma data futura e qualquer CVC. Consulte o estado local com:
+Abra a `checkoutUrl` retornada e escolha cartão ou Pix. Para cartão no sandbox,
+use `4242 4242 4242 4242`, uma data futura e qualquer CVC. O Pix só aparece
+para contas Stripe elegíveis e com o método habilitado. Consulte o estado local
+com:
 
 ```bash
 curl --fail --show-error \
@@ -125,6 +128,23 @@ O pagamento é concluído na Stripe, o webhook registra o evento de forma duráv
 o relay publica a mensagem no RabbitMQ e o consumer aplica a transição: o pedido
 chega a `paid` e o pagamento a `succeeded`. A página de retorno nunca confirma
 pagamento; somente o evento verificado altera estado.
+
+Inspecione falhas da inbox/outbox sem expor o payload do provedor e reenfileire
+uma delas de forma atômica:
+
+```bash
+curl --fail --show-error \
+  "http://localhost:8080/v1/webhook-events?status=failed&limit=50" \
+  -H "X-API-Key: $API_KEY"
+
+export WEBHOOK_EVENT_ID='evt_...'
+curl --fail --show-error -X POST \
+  "http://localhost:8080/v1/webhook-events/$WEBHOOK_EVENT_ID/reprocess" \
+  -H "X-API-Key: $API_KEY"
+```
+
+O replay aceita apenas trabalho que falhou, reutiliza a mensagem original e
+registra a quantidade e o instante das solicitações de reprocessamento.
 
 Para incluir o ambiente de observabilidade:
 
@@ -158,7 +178,7 @@ O objetivo da versão `0.1.0` é deliberadamente pequeno:
 - Pagamento único para comércio eletrônico.
 - Uma moeda inicial: BRL.
 - Um único provedor: Stripe.
-- Stripe Checkout hospedado, inicialmente para cartão em BRL.
+- Stripe Checkout hospedado para cartão e Pix em BRL.
 - Confirmação do resultado por webhook verificado.
 - Persistência de pedidos, pagamentos, tentativas e eventos.
 - Proteção contra requisições e eventos duplicados.
@@ -187,9 +207,7 @@ A pessoa usuária deste projeto é quem desenvolve o sistema que venderá o prod
 ou serviço. No MVP, o Swagger UI ocupa o lugar do sistema que futuramente
 consumirá a API.
 
-O diagrama abaixo representa o fluxo-alvo da versão `0.1.0`. A parte entre o
-webhook da Stripe e o retorno local `paid` pertence à Fase 3 e ainda não faz
-parte do runtime atual.
+O diagrama abaixo representa o fluxo implementado na versão `0.1.0`.
 
 ```mermaid
 sequenceDiagram
@@ -306,7 +324,7 @@ o Swagger UI representa no diagrama.
 | Moeda inicial: BRL | Decidido |
 | Checkout hospedado | Decidido |
 | Primeiro provedor | Stripe Checkout |
-| Meio inicial | Cartão em BRL; Pix após validar o fluxo assíncrono |
+| Meio inicial | Cartão e Pix em BRL |
 | Modelo de implantação | Um integrador por instalação |
 | Acesso às rotas de negócio | API key do integrador |
 | Licença open source | Apache-2.0 |

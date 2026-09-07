@@ -16,6 +16,7 @@ type Querier interface {
 	// detects before reaching here; this clause makes the write itself incapable
 	// of overwriting a different session.
 	AttachAttemptReferences(ctx context.Context, arg AttachAttemptReferencesParams) (int64, error)
+	GetWebhookEvent(ctx context.Context, id string) (GetWebhookEventRow, error)
 	// Written in the same transaction as the event above.
 	InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) error
 	// Inserting the event is what deduplicates a redelivery: the unique index on
@@ -38,6 +39,10 @@ type Querier interface {
 	// machine running a few seconds fast would declare another instance's lease
 	// expired while it is still publishing.
 	LeaseOutboxBatch(ctx context.Context, arg LeaseOutboxBatchParams) ([]LeaseOutboxBatchRow, error)
+	// Lists inbox entries without returning either stored payload. Provider
+	// payloads may contain customer data; the operational API exposes only the
+	// metadata needed to diagnose delivery and processing.
+	ListWebhookEvents(ctx context.Context, arg ListWebhookEventsParams) ([]ListWebhookEventsRow, error)
 	// Locks the payment aggregate an event acts upon, in one statement.
 	//
 	// Locking only the inbox row is not enough: two *different* events of the same
@@ -67,6 +72,9 @@ type Querier interface {
 	// message whose effect nobody applied, and if the transaction holding the row
 	// then rolled back the effect would be lost entirely.
 	LockWebhookEvent(ctx context.Context, id string) (LockWebhookEventRow, error)
+	// Both rows are locked before replay eligibility is checked. Concurrent
+	// requests therefore cannot count or enqueue the same replay twice.
+	LockWebhookEventForReplay(ctx context.Context, id string) (LockWebhookEventForReplayRow, error)
 	// Marks an order paid. Only a pending order moves, so a late event can never
 	// revive one that was cancelled or expired.
 	MarkOrderPaid(ctx context.Context, id string) (int64, error)
@@ -96,6 +104,11 @@ type Querier interface {
 	// the resulting value with the budget; doing that later in the service could
 	// publish the message to the DLQ while leaving this row pending.
 	RecordWebhookEventFailure(ctx context.Context, arg RecordWebhookEventFailureParams) (RecordWebhookEventFailureRow, error)
+	// Reuse the original outbox message instead of creating a second row. The
+	// inbox makes a repeated broker delivery harmless, while keeping one message
+	// id per provider event makes replay auditable and deterministic.
+	ResetOutboxForReplay(ctx context.Context, webhookEventID string) (int64, error)
+	ResetWebhookEventForReplay(ctx context.Context, id string) (int64, error)
 	// Moves a payment, refusing to leave a terminal financial state.
 	TransitionPayment(ctx context.Context, arg TransitionPaymentParams) (int64, error)
 	// Moves an attempt, refusing to leave a settled state.

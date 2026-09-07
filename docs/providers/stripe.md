@@ -22,9 +22,8 @@ requisitos da conta devem ser avaliados por cada pessoa que adotar o projeto.
 - Stripe Checkout em página hospedada.
 - Checkout Session com `mode=payment`.
 - Uma moeda: `BRL`.
-- Cartão como primeiro meio de pagamento.
-- Pix depois que inbox, outbox, RabbitMQ e worker estiverem validados com
-  cartão.
+- Cartão e Pix como meios de pagamento em BRL, sujeitos à elegibilidade e à
+  configuração da conta Stripe.
 - SDK oficial `stripe-go`.
 - Versão do SDK fixada e atualizada deliberadamente, com testes de contrato.
 - Ambiente de testes da Stripe e Stripe CLI para webhooks locais.
@@ -56,7 +55,7 @@ provedor.
 
 Para cada `PaymentAttempt`, o adapter cria uma nova Checkout Session. A chamada:
 
-1. usar `mode=payment` e a interface hospedada;
+1. usar `mode=payment`, a interface hospedada e oferecer `card` e `pix`;
 2. obter valor, moeda e descrição do pedido persistido;
 3. enviar um identificador local opaco em `client_reference_id` e em metadata,
    sem incluir dados pessoais;
@@ -86,8 +85,9 @@ seguinte.
    valores da `.env.example` retornam à documentação da API.
 3. Inicie PostgreSQL, migrations e API; crie um pedido e abra o checkout com os
    comandos do README.
-4. Abra `checkoutUrl` e use o cartão de teste `4242 4242 4242 4242`, uma data
-   futura e qualquer CVC.
+4. Abra `checkoutUrl` e escolha cartão ou Pix. Para cartão, use
+   `4242 4242 4242 4242`, uma data futura e qualquer CVC. Pix depende de uma
+   conta Stripe elegível e com o método habilitado.
 
 O pagamento aparece concluído na Stripe, o webhook registra o evento de forma
 durável, o relay o publica no RabbitMQ e o consumer aplica a transição: o pedido
@@ -144,9 +144,11 @@ Um evento cujo tipo não esteja na tabela acima é registrado como `skipped` e
 não gera mensagem. Isso mantém a trilha de auditoria e avisa quando a Stripe
 passa a enviar algo novo, sem que o evento seja tratado como inválido.
 
-Mesmo que cartão costume ter confirmação imediata, o código não deve presumir
-que todo meio de pagamento conclui durante a requisição. Esse limite prepara o
-fluxo para Pix e outros métodos assíncronos.
+O fluxo automatizado de Pix cobre os dois eventos: uma sessão completa com
+`payment_status=unpaid` move o pagamento para `processing` sem fechar a
+tentativa; `checkout.session.async_payment_succeeded` move tentativa e
+pagamento para `succeeded` e o pedido para `paid`. O caminho assíncrono é
+validado sem presumir que a conclusão do Checkout significa liquidação.
 
 ## Testes de aceitação
 
@@ -162,14 +164,15 @@ fluxo para Pix e outros métodos assíncronos.
   do webhook.
 - Receber eventos fora de ordem sem regredir um estado final.
 - Aplicar o mesmo evento duas vezes sem repetir efeitos.
+- Oferecer Pix na Checkout Session e validar `processing` até `paid` quando o
+  evento assíncrono de sucesso chega.
 
 ### Planejados para a Fase 4
 
 - Aceitar o webhook de forma durável enquanto RabbitMQ estiver indisponível e
   publicá-lo quando o broker voltar.
 - Encerrar API, relay ou worker em pontos críticos sem perder o evento.
-- Depois do fluxo de cartão estar estável, testar Pix de `processing` até o
-  estado final e o caminho de expiração/falha.
+- Testar no sandbox o caminho de expiração/falha do Pix com dados reproduzíveis.
 
 A Stripe CLI encaminha eventos ao ambiente local:
 

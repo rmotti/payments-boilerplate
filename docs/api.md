@@ -42,6 +42,8 @@ está registrada no [ADR 0010](decisions/0010-route-access-model.md):
 | `POST /v1/orders` | Header `X-API-Key` obrigatório |
 | `POST /v1/orders/{orderId}/checkout` | Header `X-API-Key` obrigatório |
 | `GET /v1/orders/{orderId}` | Header `X-API-Key` obrigatório |
+| `GET /v1/webhook-events` | Header `X-API-Key` obrigatório |
+| `POST /v1/webhook-events/{webhookEventId}/reprocess` | Header `X-API-Key` obrigatório |
 | `POST /v1/webhooks/stripe` | Sem API key; assinatura Stripe obrigatória |
 | `GET /health` | Público, com resposta mínima |
 | `GET /docs` e `GET /openapi.yaml` | Públicos enquanto a documentação estiver habilitada; o comando `api` atual os habilita em todos os ambientes |
@@ -129,7 +131,7 @@ Headers:
 | `Idempotency-Key` | sim | Identifica esta tentativa de checkout. |
 
 O caso de uso carrega o pedido persistido e envia à Stripe somente o preço em
-BRL conhecido pelo servidor. A Checkout Session usa `mode=payment`, cartão,
+BRL conhecido pelo servidor. A Checkout Session usa `mode=payment`, cartão e Pix,
 `client_reference_id` e metadata com IDs locais opacos. A resposta só é enviada
 depois que o ID da sessão, a URL e sua expiração estão ligados ao
 `PaymentAttempt` local.
@@ -170,9 +172,24 @@ O `status` do pedido usa vocabulario comercial (`pending`, `paid`, `cancelled`,
 `expired`) e nao os estados financeiros da cobranca. Uma tentativa recusada nao
 altera o pedido, que permanece `pending` ate ser pago, cancelado ou expirado.
 O pedido passa a `paid` quando o worker processar o evento confirmado pela
-Stripe. Enquanto a Fase 3 não estiver completa, o webhook já registra o evento
-de forma durável, mas o consumo assíncrono que aplica a transição ainda será
-implementado.
+Stripe. Para Pix, a sessão completa ainda não paga leva o pagamento a
+`processing`; somente o evento assíncrono de sucesso leva o pedido a `paid`.
+
+### `GET /v1/webhook-events`
+
+Lista, com `X-API-Key`, os metadados operacionais mais recentes da inbox e da
+outbox. Aceita `status` (`pending`, `processing`, `processed`, `failed` ou
+`skipped`) e `limit` de 1 a 100, com padrão 50. Payload bruto e JSON do provedor
+nunca aparecem nessa resposta.
+
+### `POST /v1/webhook-events/{webhookEventId}/reprocess`
+
+Reenfileira apenas um evento cuja inbox ou publicação da outbox esteja em
+`failed`. A transação bloqueia as duas linhas, reutiliza o `messageId` original,
+zera o budget da etapa que falhou e registra `replayCount` e `lastReplayedAt`.
+Um replay concorrente ou de trabalho que já voltou a `pending` recebe `409`
+`webhook_event_not_replayable`; um ID inexistente recebe `404`
+`webhook_event_not_found`.
 
 ### `POST /v1/webhooks/stripe`
 
@@ -238,6 +255,6 @@ na Fase 4.
 - Catálogo público ou gerenciamento de produtos.
 - Reembolsos.
 - Assinaturas.
-- Operações administrativas.
+- Painel administrativo e operações financeiras manuais.
 - Relatórios e conciliação.
 - Upload ou captura de dados de cartão.

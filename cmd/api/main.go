@@ -92,11 +92,13 @@ func run() error {
 		repositories.NewPaymentRepository(db.GORM),
 		stripeadapter.NewCheckout(cfg.StripeSecretKey, cfg.StripeSuccessURL, cfg.StripeCancelURL),
 	)
+	webhookRepository := repositories.NewWebhookRepository(db.SQL)
 	webhookService := webhookapp.NewService(
 		stripeadapter.NewWebhook(cfg.StripeWebhookSecret),
-		repositories.NewWebhookRepository(db.SQL),
+		webhookRepository,
 	)
-	apiHandler := httpserver.NewAPIHandler(healthService, orderService, checkoutService, webhookService)
+	operationsService := webhookapp.NewOperationsService(webhookRepository)
+	apiHandler := httpserver.NewAPIHandler(healthService, orderService, checkoutService, webhookService, operationsService)
 	server := httpserver.New(httpserver.Config{
 		Address:         cfg.HTTPAddress,
 		ShutdownTimeout: cfg.ShutdownTimeout,

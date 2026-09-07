@@ -13,7 +13,9 @@ import (
 
 	app "github.com/rmotti/payments-boilerplate/internal/application/orders"
 	paymentapp "github.com/rmotti/payments-boilerplate/internal/application/payments"
+	webhookapp "github.com/rmotti/payments-boilerplate/internal/application/webhooks"
 	domain "github.com/rmotti/payments-boilerplate/internal/domain/orders"
+	webhookdomain "github.com/rmotti/payments-boilerplate/internal/domain/webhooks"
 	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/transport/http/openapi"
 	"go.uber.org/zap"
@@ -126,9 +128,125 @@ func newTestHandlerWithCheckout(orders OrderCreator, checkouts CheckoutCreator) 
 }
 
 func newTestHandlerWith(orders OrderCreator, checkouts CheckoutCreator, webhooks WebhookReceiver) http.Handler {
-	api := NewAPIHandler(health.New("payments-api", "test", nil), orders, checkouts, webhooks)
+	return newTestHandlerWithOperations(orders, checkouts, webhooks, nil)
+}
+
+func newTestHandlerWithOperations(
+	orders OrderCreator,
+	checkouts CheckoutCreator,
+	webhooks WebhookReceiver,
+	operations WebhookOperations,
+) http.Handler {
+	api := NewAPIHandler(health.New("payments-api", "test", nil), orders, checkouts, webhooks, operations)
 	verifier := verifierFunc(func(candidate string) bool { return candidate == testAPIKey })
 	return New(Config{Address: ":0", ShutdownTimeout: time.Second}, zap.NewNop(), api, verifier).server.Handler
+}
+
+type webhookOperationsStub struct {
+	items      []webhookapp.EventInspection
+	err        error
+	gotStatus  webhookdomain.Status
+	gotLimit   int
+	gotEventID string
+}
+
+func (s *webhookOperationsStub) List(
+	_ context.Context,
+	status webhookdomain.Status,
+	limit int,
+) ([]webhookapp.EventInspection, error) {
+	s.gotStatus, s.gotLimit = status, limit
+	return s.items, s.err
+}
+
+func (s *webhookOperationsStub) Reprocess(_ context.Context, eventID string) (webhookapp.EventInspection, error) {
+	s.gotEventID = eventID
+	if s.err != nil {
+		return webhookapp.EventInspection{}, s.err
+	}
+	return s.items[0], nil
+}
+
+func TestListWebhookEventsIsAuthenticatedAndOmitsPayloads(t *testing.T) {
+	t.Parallel()
+
+	receivedAt := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	operations := &webhookOperationsStub{items: []webhookapp.EventInspection{{
+		ID: "evt_0123456789abcdef0123456789abcdef", Provider: webhookdomain.Stripe,
+		ProviderEventID: "evt_provider", EventType: "checkout.session.completed",
+		Status: webhookdomain.StatusFailed, Attempts: 3, ReceivedAt: receivedAt,
+		UpdatedAt: receivedAt, LastError: "bad event shape", ReplayCount: 0,
+		Outbox: &webhookapp.OutboxInspection{
+			ID: "msg_0123456789abcdef0123456789abcdef", Status: webhookdomain.MessagePublished,
+			Attempts: 1, NextAttemptAt: receivedAt,
+		},
+	}}}
+	handler := newTestHandlerWithOperations(nil, nil, nil, operations)
+
+	unauthorized := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/webhook-events", nil)
+	unauthorizedRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorizedRecorder, unauthorized)
+	if unauthorizedRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want 401", unauthorizedRecorder.Code)
+	}
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/webhook-events?status=failed&limit=10", nil)
+	request.Header.Set(apiKeyHeader, testAPIKey)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", recorder.Code, recorder.Body.String())
+	}
+	if operations.gotStatus != webhookdomain.StatusFailed || operations.gotLimit != 10 {
+		t.Fatalf("operation input = %q/%d, want failed/10", operations.gotStatus, operations.gotLimit)
+	}
+	if strings.Contains(recorder.Body.String(), `"payload":`) || strings.Contains(recorder.Body.String(), `"rawPayload":`) ||
+		!strings.Contains(recorder.Body.String(), "bad event shape") {
+		t.Fatalf("body = %s, want diagnostics without provider payload", recorder.Body.String())
+	}
+}
+
+func TestReprocessWebhookEvent(t *testing.T) {
+	t.Parallel()
+
+	eventID := "evt_0123456789abcdef0123456789abcdef"
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	operations := &webhookOperationsStub{items: []webhookapp.EventInspection{{
+		ID: eventID, Provider: webhookdomain.Stripe, ProviderEventID: "evt_provider",
+		EventType: "checkout.session.completed", Status: webhookdomain.StatusPending,
+		ReceivedAt: now, UpdatedAt: now, ReplayCount: 1,
+	}}}
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/v1/webhook-events/"+eventID+"/reprocess", nil)
+	request.Header.Set(apiKeyHeader, testAPIKey)
+	recorder := httptest.NewRecorder()
+	newTestHandlerWithOperations(nil, nil, nil, operations).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (%s)", recorder.Code, recorder.Body.String())
+	}
+	if operations.gotEventID != eventID {
+		t.Fatalf("event id = %q, want %q", operations.gotEventID, eventID)
+	}
+}
+
+func TestReprocessWebhookEventRejectsNonFailedWork(t *testing.T) {
+	t.Parallel()
+
+	eventID := "evt_0123456789abcdef0123456789abcdef"
+	operations := &webhookOperationsStub{err: webhookapp.ErrEventNotReplayable}
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/v1/webhook-events/"+eventID+"/reprocess", nil)
+	request.Header.Set(apiKeyHeader, testAPIKey)
+	recorder := httptest.NewRecorder()
+	newTestHandlerWithOperations(nil, nil, nil, operations).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (%s)", recorder.Code, recorder.Body.String())
+	}
+	if body := decodeError(t, recorder); body.Code != codeWebhookEventNotReplayable {
+		t.Fatalf("error code = %q, want %q", body.Code, codeWebhookEventNotReplayable)
+	}
 }
 
 type stubCheckouts struct {
@@ -335,7 +453,7 @@ func TestCreateOrderReturnsServerComputedAmount(t *testing.T) {
 	if err := json.NewDecoder(recorder.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	want := openapi.Order{Id: "ord_fixed", Status: openapi.Pending, Amount: 30000, Currency: "BRL"}
+	want := openapi.Order{Id: "ord_fixed", Status: openapi.OrderStatusPending, Amount: 30000, Currency: "BRL"}
 	if body != want {
 		t.Fatalf("body = %#v, want %#v", body, want)
 	}

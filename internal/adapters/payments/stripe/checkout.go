@@ -17,7 +17,7 @@ type sessionCreator interface {
 	Create(context.Context, *stripesdk.CheckoutSessionCreateParams) (*stripesdk.CheckoutSession, error)
 }
 
-// Checkout creates hosted, one-time card Checkout Sessions.
+// Checkout creates hosted, one-time card and Pix Checkout Sessions.
 type Checkout struct {
 	sessions   sessionCreator
 	successURL string
@@ -40,6 +40,7 @@ func (c *Checkout) CreateCheckout(ctx context.Context, request payments.Provider
 		ClientReferenceID: stripesdk.String(request.OrderID),
 		PaymentMethodTypes: []*string{
 			stripesdk.String(stripesdk.PaymentMethodTypeCard),
+			stripesdk.String(stripesdk.PaymentMethodTypePix),
 		},
 		LineItems: []*stripesdk.CheckoutSessionCreateLineItemParams{{
 			Quantity: stripesdk.Int64(int64(request.Quantity)),
