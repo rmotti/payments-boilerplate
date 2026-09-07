@@ -44,7 +44,7 @@ A implementação lê as configurações do ambiente:
 | Variável | Finalidade |
 | --- | --- |
 | `STRIPE_SECRET_KEY` | Autenticar chamadas do backend à API da Stripe |
-| `STRIPE_WEBHOOK_SECRET` | Verificar assinaturas do endpoint de webhook na Fase 3 |
+| `STRIPE_WEBHOOK_SECRET` | Verificar assinaturas do endpoint de webhook |
 | `STRIPE_SUCCESS_URL` | Retorno do consumidor após o Checkout |
 | `STRIPE_CANCEL_URL` | Retorno quando o consumidor cancela o Checkout |
 
@@ -87,9 +87,10 @@ seguinte.
 4. Abra `checkoutUrl` e use o cartão de teste `4242 4242 4242 4242`, uma data
    futura e qualquer CVC.
 
-Nesta fase o pagamento aparece concluído na Stripe, mas o pedido local continua
-`pending`. A confirmação local por webhook, inbox/outbox e worker pertence à
-Fase 3; a URL de sucesso nunca é tratada como prova de pagamento.
+Nesta fase o pagamento aparece concluído na Stripe e o webhook já registra o
+evento de forma durável, mas o pedido local continua `pending`: a publicação no
+RabbitMQ e o worker que aplica a transição pertencem ao restante da Fase 3. A
+URL de sucesso nunca é tratada como prova de pagamento.
 
 ### Validação executada
 
@@ -104,9 +105,17 @@ localmente em `pending`; nenhuma URL de retorno foi usada para alterar estado.
 
 ## Webhooks e transições
 
-O endpoint inicial será `POST /v1/webhooks/stripe`. A implementação deve limitar
-o tamanho do corpo, preservar seus bytes originais e verificar o header
-`Stripe-Signature` com o secret do endpoint antes de desserializar o evento.
+O endpoint é `POST /v1/webhooks/stripe`. Ele limita o tamanho do corpo,
+preserva os bytes originais e verifica o header `Stripe-Signature` com o secret
+do endpoint antes de desserializar o evento. A janela de tolerância padrão do
+SDK rejeita assinaturas antigas, o que impede o replay de uma entrega
+capturada.
+
+A verificação ignora deliberadamente divergências de versão de API. Este
+endpoint apenas registra o evento e nada interpreta o grafo de objetos do
+provedor ainda; uma diferença de versão não pode impedir que um evento
+autêntico seja gravado. A compatibilidade será verificada pelo consumidor,
+quando ele realmente ler a sessão.
 
 Eventos necessários:
 
@@ -117,10 +126,14 @@ Eventos necessários:
 | `checkout.session.async_payment_failed` | Mover uma tentativa válida para `failed` |
 | `checkout.session.expired` | Cancelar uma tentativa ainda não concluída, sem regredir um estado final |
 
-O ID do evento da Stripe será a chave externa de deduplicação da inbox. Um
-evento verificado será salvo junto com a outbox em uma única transação; o
-processamento de negócio ocorrerá pelo RabbitMQ. Eventos repetidos ou fora de
-ordem não poderão repetir efeitos nem regredir estados finais.
+O ID do evento da Stripe é a chave externa de deduplicação da inbox. Um evento
+verificado é salvo junto com a outbox em uma única transação; o processamento de
+negócio ocorrerá pelo RabbitMQ. Eventos repetidos ou fora de ordem não poderão
+repetir efeitos nem regredir estados finais.
+
+Um evento cujo tipo não esteja na tabela acima é registrado como `skipped` e
+não gera mensagem. Isso mantém a trilha de auditoria e avisa quando a Stripe
+passa a enviar algo novo, sem que o evento seja tratado como inválido.
 
 Mesmo que cartão costume ter confirmação imediata, o código não deve presumir
 que todo meio de pagamento conclui durante a requisição. Esse limite prepara o
@@ -128,19 +141,21 @@ fluxo para Pix e outros métodos assíncronos.
 
 ## Testes de aceitação
 
-### Validados na Fase 2
+### Validados
 
 - Criar um pedido e abrir sua Checkout Session hospedada.
 - Concluir um cartão de teste, observar `paid` na Stripe e manter o pedido local
   em `pending`.
 - Repetir a criação com a mesma idempotency key sem criar outra sessão.
+- Rejeitar assinatura ausente, forjada ou fora da janela de tolerância.
+- Aceitar um evento assinado e gravar inbox e outbox na mesma transação.
+- Receber duas vezes o mesmo evento sem criar uma segunda mensagem.
+- Registrar um evento de tipo não tratado sem enfileirá-lo.
 
 ### Planejados para as Fases 3 e 4
 
 - Concluir um cartão de teste e observar o pedido local chegar a `paid` depois
   do webhook.
-- Rejeitar assinatura ausente ou inválida.
-- Receber duas vezes o mesmo evento sem duplicar efeitos.
 - Receber eventos fora de ordem sem regredir um estado final.
 - Aceitar o webhook de forma durável enquanto RabbitMQ estiver indisponível e
   publicá-lo quando o broker voltar.
@@ -148,8 +163,7 @@ fluxo para Pix e outros métodos assíncronos.
 - Depois do fluxo de cartão estar estável, testar Pix de `processing` até o
   estado final e o caminho de expiração/falha.
 
-Quando o endpoint existir, a Stripe CLI poderá encaminhar eventos ao ambiente
-local:
+A Stripe CLI encaminha eventos ao ambiente local:
 
 ```shell
 stripe listen --forward-to localhost:8080/v1/webhooks/stripe

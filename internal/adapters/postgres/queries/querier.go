@@ -9,6 +9,12 @@ import (
 )
 
 type Querier interface {
+	// Written in the same transaction as the event above.
+	InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) error
+	// Inserting the event is what deduplicates a redelivery: the unique index on
+	// (provider, provider_event_id) turns the second arrival into zero rows, and
+	// the caller learns it must not produce an outbox message.
+	InsertWebhookEvent(ctx context.Context, arg InsertWebhookEventParams) (string, error)
 	Ping(ctx context.Context) (int32, error)
 }
 

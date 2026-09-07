@@ -54,9 +54,9 @@ múltiplos provedores.
 
 ## Fase 3 — Confirmação assíncrona confiável
 
-- [ ] Validar assinatura usando o corpo bruto da requisição.
-- [ ] Persistir inbox e outbox na mesma transação.
-- [ ] Deduplicar entregas.
+- [x] Validar assinatura usando o corpo bruto da requisição.
+- [x] Persistir inbox e outbox na mesma transação.
+- [x] Deduplicar entregas.
 - [ ] Publicar mensagens persistentes com publisher confirms.
 - [ ] Consumir com ack manual e concorrência limitada.
 - [ ] Implementar retry com backoff e dead-letter queue.

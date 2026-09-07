@@ -117,15 +117,17 @@ dialogo com o provedor; o pagamento e a conclusao.
 
 ### webhook_events
 
-O schema do inbox duravel dos eventos recebidos ja existe, mas nenhuma linha e
-gravada pelo runtime atual. Na Fase 3, a linha sera inserida dentro da requisicao
+O inbox duravel dos eventos recebidos. A linha e inserida dentro da requisicao
 do webhook, antes de qualquer efeito de negocio, e so depois disso a API
-respondera sucesso ao provedor.
+responde sucesso ao provedor.
 
-O evento sera guardado em duas formas. `raw_payload` preservara os bytes exatos
-que o provedor assinou, pois `jsonb` reordena chaves e descarta formatacao, e
-esses bytes desaparecem junto com a requisicao. `payload` guardara o mesmo
-evento desserializado, para consulta e reprocessamento.
+O evento e guardado em duas formas. `raw_payload` preserva os bytes exatos que o
+provedor assinou, pois `jsonb` reordena chaves e descarta formatacao, e esses
+bytes desaparecem junto com a requisicao. `payload` guarda o mesmo evento
+desserializado, para consulta e reprocessamento.
+
+Um evento cujo tipo a aplicacao nao trata tambem e gravado, com status
+`skipped`, para manter a trilha de auditoria sem enfileirar trabalho.
 
 `attempts` e `last_error` sustentarao retry com backoff e diagnostico do que
 parou na dead-letter queue.
@@ -200,27 +202,41 @@ POST /v1/orders/{orderId}/checkout
   -> cria a sessao no provedor
   UPDATE payment_attempts            status pending, guarda sessao, URL e expiracao
 
-Fase 3: webhook do provedor
+Webhook do provedor
   BEGIN
     INSERT webhook_events            status pending, dentro da requisicao
     INSERT outbox_events             mesma transacao
   COMMIT
   -> resposta 2xx ao provedor
 
-Fase 3: worker
+Fase 3: relay e worker
   UPDATE payment_attempts            resultado da tentativa
   UPDATE payments                    estado financeiro consolidado
   UPDATE orders                      status paid, na mesma transacao
   UPDATE webhook_events              status processed
 ```
 
-Na Fase 3, as quatro atualizacoes do worker ocorrerao em uma unica transacao. E
-isso que impedira o pedido de dizer `paid` enquanto a cobranca ainda estiver
-`processing`.
+As quatro atualizacoes do worker ocorrerao em uma unica transacao, o que
+impedira o pedido de dizer `paid` enquanto a cobranca ainda estiver
+`processing`. O worker pertence ao restante da Fase 3.
+
+### outbox_events
+
+Registra a intencao de publicar uma mensagem. A linha e criada na mesma
+transacao do `webhook_events` que a originou: ou as duas existem, ou nenhuma
+existe. E isso que fecha a janela entre commitar no PostgreSQL e publicar no
+RabbitMQ, que nao compartilham transacao.
+
+A tabela nao guarda o payload do provedor. Ela carrega a referencia ao evento,
+o tipo em vocabulario de dominio, a versao do schema da mensagem, a routing key,
+a correlacao e o instante de ocorrencia; o consumidor rele o inbox para obter a
+copia canonica. As razoes estao no ADR 0011.
+
+O indice parcial sobre linhas nao publicadas existe para o relay varrer apenas
+o que falta publicar, sem caminhar sobre historico.
 
 ## Ainda nao modelado
 
-- `outbox_events`, introduzida na Fase 3 junto com o relay.
 - `refunds`, que hoje existe apenas como estado em `payments.status`. O schema
   sabe que houve reembolso, mas nao quanto nem quantos.
 - `customers`, fora do escopo da versao 0.1.

@@ -223,6 +223,92 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/webhooks/stripe:
+    post:
+      operationId: receiveStripeWebhook
+      summary: Recebe um evento assinado pela Stripe.
+      description: |
+        Endpoint destinado a Stripe, nao ao sistema integrador. Nao usa a chave
+        de integracao: a confianca vem da verificacao criptografica do header
+        Stripe-Signature sobre os bytes exatos do corpo.
+
+        ATENCAO ao media type: a Stripe envia Content-Type application/json,
+        mas o contrato declara application/octet-stream de proposito. A
+        assinatura cobre os bytes exatos do corpo, e declarar application/json
+        faria o servidor desserializar e reserializar o conteudo antes da
+        verificacao, mudando ordem de chaves e espacos e invalidando qualquer
+        assinatura legitima. O corpo e tratado como opaco ate ser verificado.
+
+        A consequencia e que ferramentas que validam o media type estritamente
+        podem apontar incompatibilidade entre o enviado e o declarado. O
+        servidor aceita a requisicao normalmente: o Content-Type recebido nao e
+        usado para escolher como ler o corpo.
+
+        A operacao apenas registra o evento de forma duravel e cria, na mesma
+        transacao, a mensagem que sera publicada. Nenhum estado de pagamento
+        muda dentro desta requisicao.
+
+        Cada status e uma instrucao de reentrega para a Stripe: 2xx encerra as
+        tentativas, qualquer outro codigo faz o evento ser reenviado.
+      tags: [Payments]
+      security: []
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: false
+          description: |
+            Assinatura do corpo bruto. Declarado como opcional para que a
+            ausencia seja tratada pelo mesmo caminho de uma assinatura
+            invalida, com o codigo de erro invalid_signature.
+          schema:
+            type: string
+          example: t=1719000000,v1=5257a869e7ecebeda32affa62cdca3fa51cad7e77a0e56ff536d0ce8e108d8bd
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: |
+                Evento JSON assinado pela Stripe, tratado como sequencia opaca
+                de bytes ate que a assinatura seja verificada.
+      responses:
+        "202":
+          description: |
+            Evento novo aceito de forma duravel e enfileirado para
+            processamento assincrono.
+        "200":
+          description: |
+            Nada a fazer: o evento ja havia sido recebido antes, ou e de um
+            tipo que a aplicacao nao trata e foi apenas registrado.
+        "400":
+          description: Assinatura ausente, invalida ou fora da janela de tempo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidSignature:
+                  value:
+                    code: invalid_signature
+                    message: webhook signature could not be verified
+                    correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
+        "500":
+          description: |
+            O evento nao pode ser registrado. Devolvido tambem quando o corpo
+            excede o limite do endpoint, porque nesse caso uma reentrega passa
+            a funcionar depois que o limite for corrigido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                internal:
+                  value:
+                    code: internal_error
+                    message: internal error
+                    correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
 components:
   securitySchemes:
     integrationApiKey:

@@ -1,10 +1,11 @@
 # Arquitetura
 
 Este documento descreve as fronteiras e invariantes da API em Go e distingue o
-runtime atual da arquitetura-alvo da versão `0.1.0`. Ao fim da Fase 2, a API usa
-PostgreSQL como fonte de verdade e abre Stripe Checkout; o processo `worker`
-apenas verifica PostgreSQL e RabbitMQ e expõe health. Webhook, inbox/outbox,
-relay e consumo assíncrono pertencem à Fase 3.
+runtime atual da arquitetura-alvo da versão `0.1.0`. A API usa PostgreSQL como
+fonte de verdade, abre Stripe Checkout e já recebe webhooks assinados,
+gravando o evento e sua mensagem de outbox na mesma transação. O relay que
+publica essas mensagens e o consumo assíncrono ainda pertencem à Fase 3, e o
+processo `worker` continua apenas verificando PostgreSQL e RabbitMQ.
 
 ## Contexto
 
@@ -38,15 +39,15 @@ Swagger UI ou sistema do integrador
 ```
 
 O checkout coleta os dados de pagamento em uma página hospedada pela Stripe.
-A API já cria e consulta suas próprias entidades de negócio. Na Fase 3, ela
-receberá o resultado assíncrono por um endpoint de webhook. O Swagger UI
-documenta e exercita o contrato, mas não faz parte do fluxo de produção de quem
-adotar o projeto.
+A API cria e consulta suas próprias entidades de negócio e já recebe o
+resultado assíncrono por um endpoint de webhook. O Swagger UI documenta e
+exercita o contrato, mas não faz parte do fluxo de produção de quem adotar o
+projeto.
 
-Na arquitetura-alvo, a API persistirá o webhook e uma mensagem de outbox na
-mesma transação. O relay publicará a mensagem no RabbitMQ e o worker aplicará
-seus efeitos de forma idempotente. API, relay e consumer pertencerão ao mesmo
-código-base.
+A API persiste o webhook e uma mensagem de outbox na mesma transação. O relay
+publicará a mensagem no RabbitMQ e o worker aplicará seus efeitos de forma
+idempotente; essas duas etapas ainda pertencem à Fase 3. API, relay e consumer
+pertencem ao mesmo código-base.
 
 ## Responsabilidades
 
@@ -56,8 +57,8 @@ código-base.
 - Receber, validar e persistir a chave de idempotência escolhida pelo integrador.
 - Solicitar a criação do checkout ao provedor.
 - Associar identificadores locais aos identificadores externos.
-- Na Fase 3, validar e armazenar eventos recebidos.
-- Na Fase 3, criar a mensagem de outbox na mesma transação do evento.
+- Validar e armazenar eventos recebidos do provedor.
+- Criar a mensagem de outbox na mesma transação do evento.
 - Expor ao sistema integrador o estado conhecido pela API.
 - Publicar um contrato OpenAPI coerente com a implementação.
 
@@ -110,15 +111,15 @@ depois de autenticado, o integrador pode operar todos os pedidos da instalação
 
 ```text
 backend do integrador -- X-API-Key ------> rotas de pedido e checkout
-Stripe --------------- Stripe-Signature -> webhook (Fase 3)
+Stripe --------------- Stripe-Signature -> webhook
 infraestrutura -------- rede/probe ------> health
 desenvolvedor ---------- ambiente local --> Swagger UI
 ```
 
 A camada HTTP aplica autenticação por API key às operações de negócio. A
-política nega acesso por padrão e libera explicitamente apenas health. O
-webhook assinado será uma exceção pública quando entrar na Fase 3. O domínio e
-os casos de uso não conhecem headers ou credenciais.
+política nega acesso por padrão e libera explicitamente apenas health e o
+webhook assinado, cuja confiança vem da verificação da assinatura sobre o corpo
+bruto. O domínio e os casos de uso não conhecem headers ou credenciais.
 
 O comando `api` atual serve Swagger UI e o documento OpenAPI publicamente em
 qualquer `APP_ENV`. Desabilitar ou proteger essa documentação fora do ambiente
@@ -130,8 +131,9 @@ O modelo completo, alternativas e limitações estão no
 
 ## Modelo de domínio e schema
 
-`Order`, `Payment` e `PaymentAttempt` já possuem entidades Go e persistência.
-`WebhookEvent` possui schema preparado, mas seu caso de uso entra na Fase 3.
+`Order`, `Payment`, `PaymentAttempt`, `WebhookEvent` e `OutboxEvent` possuem
+entidades Go e persistência. As transições de estado disparadas pelos eventos
+recebidos pertencem ao consumidor da Fase 3.
 
 ### Customer — fora da versão 0.1
 
@@ -158,18 +160,25 @@ chave de idempotência e o identificador externo.
 Reservado no modelo para evolução posterior. A automação de reembolsos não faz
 parte da versão 0.1.
 
-### WebhookEvent — schema pronto, uso na Fase 3
+### WebhookEvent
 
 Inbox persistente dos eventos recebidos. Guarda identificador externo, tipo,
 datas de recebimento e processamento, estado do processamento e informação de
 erro suficiente para reprocessamento seguro.
 
-### OutboxEvent — Fase 3
+### OutboxEvent
 
-Ainda não está modelado. Registrará a intenção de publicar uma mensagem, será
-criado na mesma transação que o `WebhookEvent` e só será marcado como publicado
-após a confirmação do RabbitMQ. Uma publicação poderá se repetir, portanto o
-consumidor continuará idempotente.
+Registra a intenção de publicar uma mensagem. É criado na mesma transação que o
+`WebhookEvent` e só será marcado como publicado após a confirmação do RabbitMQ,
+o que pertence ao relay da Fase 3. Uma publicação poderá se repetir, portanto o
+consumidor precisa ser idempotente.
+
+A linha não guarda o payload do provedor. A mensagem publicada carrega apenas
+`messageId`, tipo, versão do schema, instante de ocorrência, correlação e a
+referência ao `WebhookEvent`; o consumidor relê a inbox para obter a cópia
+canônica. O tipo publicado usa vocabulário de domínio, não o nome do evento no
+provedor, o que mantém o contrato de mensageria neutro. As razões estão no
+[ADR 0011](decisions/0011-webhook-reception-and-outbox.md).
 
 ## Estado inicial de pagamento
 
@@ -189,8 +198,9 @@ primeira versão.
 
 ## Invariantes
 
-As invariantes de pedido, preço, checkout e idempotência já são executáveis. As
-que mencionam webhook, outbox, publicação ou consumo descrevem a Fase 3.
+As invariantes de pedido, preço, checkout, idempotência, recepção de webhook e
+gravação atômica da inbox com a outbox já são executáveis. As que mencionam
+publicação no broker e consumo descrevem o restante da Fase 3.
 
 - Dinheiro é representado por inteiro na menor unidade e código de moeda.
 - Valor e moeda tornam-se imutáveis quando o checkout é iniciado.
@@ -226,9 +236,11 @@ internal/
   domain/
     orders/
     payments/
+    webhooks/
   application/
     orders/
     payments/
+    webhooks/
   adapters/
     catalog/
     postgres/
@@ -252,10 +264,13 @@ docs/
 tests/
 ```
 
-Os repositories atuais usam GORM com transações curtas e apoiam as garantias de
-concorrência nas constraints do schema. A geração com `sqlc` está preparada
-para o SQL crítico da Fase 3, como locks, polling e transições condicionais.
-Goose é a única autoridade de migrations e o projeto não usa `AutoMigrate`.
+Os repositories de pedido e pagamento usam GORM com transações curtas e apoiam
+as garantias de concorrência nas constraints do schema. A inbox e a outbox usam
+`sqlc` sobre `database/sql`, porque a forma dessas queries faz parte da
+garantia; as duas tabelas são novas, então nenhuma transação mistura os dois
+estilos. Locks, polling e transições condicionais do relay e do consumer também
+usarão `sqlc`. Goose é a única autoridade de migrations e o projeto não usa
+`AutoMigrate`.
 
 ## Implantação inicial
 
@@ -284,22 +299,26 @@ A aplicação já usa uma porta pequena para a operação exigida pela Fase 2:
 CreateCheckout(ctx, trusted order data, idempotencyKey) -> checkout reference
 ```
 
-Na Fase 3, as operações de webhook entram apenas quando seus casos de uso forem
-implementados:
+A verificação de webhook já usa uma segunda porta pequena, implementada pelo
+mesmo adapter:
 
 ```text
-ParseAndVerifyWebhook(rawBody, headers) -> provider event
-MapEvent(providerEvent) -> domain event
+Verify(rawBody, signature) -> provider event com significado de domínio
 ```
+
+O adapter traduz o nome do evento no provedor para o vocabulário do domínio.
+Um evento que não mapeia para nenhum significado conhecido é registrado e
+ignorado, nunca rejeitado como se fosse forjado.
 
 Operações não usadas não devem ser adicionadas para tentar antecipar todos os
 provedores.
 
-## Garantia de publicação — Fase 3
+## Garantia de publicação
 
 PostgreSQL e RabbitMQ não compartilham uma transação. Publicar diretamente no
 broker depois de salvar o webhook criaria uma janela de perda entre as duas
-operações. Na Fase 3, o transactional outbox fechará essa janela:
+operações. O transactional outbox fecha essa janela; a gravação abaixo já é
+executável, e o relay entra no restante da Fase 3:
 
 ```text
 BEGIN
@@ -331,42 +350,38 @@ forma idempotente.
 
 ## Superfície HTTP
 
-Implementada ao fim da Fase 2:
+Implementada:
 
 ```text
 POST /v1/orders
 POST /v1/orders/{orderId}/checkout
 GET  /v1/orders/{orderId}
+POST /v1/webhooks/stripe
 GET  /health
 GET  /docs
 GET  /openapi.yaml
 ```
 
-Planejada para a Fase 3:
-
-```text
-POST /v1/webhooks/stripe
-```
-
-O contrato executável detalhado está em [Contrato da API](api.md). O endpoint de
-webhook só entrará na especificação quando puder validar uma assinatura real e
-persistir o evento de forma durável.
+O contrato executável detalhado está em [Contrato da API](api.md).
 
 ## Cenários de teste
 
-Cobertos na Fase 2:
+Cobertos:
 
 - Criação e consulta de pedido com preço definido no servidor.
 - Repetição idempotente de pedido e checkout.
 - Falha do provedor e resposta de sessão inválida.
 - Duas chaves concorrentes disputando o mesmo checkout.
 - Tentativa do cliente de informar o próprio valor.
+- Assinatura de webhook ausente, forjada ou fora da janela de tempo.
+- Corpo de webhook acima do limite do endpoint.
+- Mesmo evento entregue duas vezes, sem segunda mensagem de outbox.
+- Evento de tipo não tratado, registrado sem produzir mensagem.
+- Falha de gravação respondida de forma que o provedor reentregue.
 
 Planejados para as Fases 3 e 4:
 
 - Timeout depois de o provedor aceitar a operação e antes da persistência local.
-- Assinatura de webhook inválida.
-- Mesmo evento entregue duas vezes.
 - Eventos relacionados entregues fora de ordem.
 - Falha no processamento depois de o evento ser persistido.
 - RabbitMQ indisponível depois do commit da inbox e do outbox.

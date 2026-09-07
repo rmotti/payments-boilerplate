@@ -51,8 +51,9 @@ func TestValidateStripe(t *testing.T) {
 	t.Parallel()
 
 	valid := Config{
-		StripeSecretKey: "sk_test_example", StripeSuccessURL: "http://localhost:3000/payment/success",
-		StripeCancelURL: "https://example.com/payment/cancel",
+		StripeSecretKey: "sk_test_example", StripeWebhookSecret: "whsec_example",
+		StripeSuccessURL: "http://localhost:3000/payment/success",
+		StripeCancelURL:  "https://example.com/payment/cancel",
 	}
 	if err := valid.ValidateStripe(); err != nil {
 		t.Fatalf("ValidateStripe() error = %v", err)
@@ -63,6 +64,7 @@ func TestValidateStripe(t *testing.T) {
 		mutate func(*Config)
 	}{
 		{name: "missing secret", mutate: func(c *Config) { c.StripeSecretKey = "" }},
+		{name: "missing webhook secret", mutate: func(c *Config) { c.StripeWebhookSecret = "" }},
 		{name: "relative success", mutate: func(c *Config) { c.StripeSuccessURL = "/success" }},
 		{name: "unsupported cancel scheme", mutate: func(c *Config) { c.StripeCancelURL = "javascript:alert(1)" }},
 	}

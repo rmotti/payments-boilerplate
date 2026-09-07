@@ -61,10 +61,12 @@ pelos casos de uso.
 - Mudanças destrutivas seguem a sequência `expand`, `migrate`, `contract`.
 - Queries cuja forma fizer parte da garantia devem ser explícitas e gerar tipos
   por meio do `sqlc`.
-- Na Fase 2, GORM coordena o CRUD e as transações curtas, enquanto constraints e
-  índices do schema garantem idempotência e concorrência. Locks, polling de
-  inbox/outbox, deduplicação e transições condicionais da Fase 3 deverão usar
-  SQL explícito com `sqlc` quando a forma da query fizer parte da garantia.
+- GORM coordena o CRUD e as transações curtas de pedido e pagamento, enquanto
+  constraints e índices do schema garantem idempotência e concorrência. A
+  gravação de inbox e outbox e a deduplicação de eventos já usam `sqlc`, e os
+  locks, o polling do relay e as transições condicionais do consumer seguirão o
+  mesmo caminho: SQL explícito sempre que a forma da query fizer parte da
+  garantia.
 - Models do GORM não são entidades do domínio e hooks não contêm regras de
   negócio.
 - O schema do banco é interno e não deve ser consumido diretamente por

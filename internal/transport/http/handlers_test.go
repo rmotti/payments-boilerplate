@@ -24,7 +24,7 @@ func TestGetHealthReady(t *testing.T) {
 
 	handler := NewAPIHandler(health.New("payments-api", "test", map[string]health.Checker{
 		"postgres": func(context.Context) error { return nil },
-	}), nil, nil)
+	}), nil, nil, nil)
 
 	response, err := handler.GetHealth(context.Background(), openapi.GetHealthRequestObject{})
 	if err != nil {
@@ -44,7 +44,7 @@ func TestGetHealthUnavailable(t *testing.T) {
 
 	handler := NewAPIHandler(health.New("payments-worker", "test", map[string]health.Checker{
 		"rabbitmq": func(context.Context) error { return errors.New("unavailable") },
-	}), nil, nil)
+	}), nil, nil, nil)
 
 	response, err := handler.GetHealth(context.Background(), openapi.GetHealthRequestObject{})
 	if err != nil {
@@ -122,7 +122,11 @@ func newTestHandler(orders OrderCreator) http.Handler {
 }
 
 func newTestHandlerWithCheckout(orders OrderCreator, checkouts CheckoutCreator) http.Handler {
-	api := NewAPIHandler(health.New("payments-api", "test", nil), orders, checkouts)
+	return newTestHandlerWith(orders, checkouts, nil)
+}
+
+func newTestHandlerWith(orders OrderCreator, checkouts CheckoutCreator, webhooks WebhookReceiver) http.Handler {
+	api := NewAPIHandler(health.New("payments-api", "test", nil), orders, checkouts, webhooks)
 	verifier := verifierFunc(func(candidate string) bool { return candidate == testAPIKey })
 	return New(Config{Address: ":0", ShutdownTimeout: time.Second}, zap.NewNop(), api, verifier).server.Handler
 }

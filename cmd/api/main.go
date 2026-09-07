@@ -14,6 +14,7 @@ import (
 	"github.com/rmotti/payments-boilerplate/internal/adapters/postgres/repositories"
 	orderapp "github.com/rmotti/payments-boilerplate/internal/application/orders"
 	paymentapp "github.com/rmotti/payments-boilerplate/internal/application/payments"
+	webhookapp "github.com/rmotti/payments-boilerplate/internal/application/webhooks"
 	"github.com/rmotti/payments-boilerplate/internal/platform/auth"
 	"github.com/rmotti/payments-boilerplate/internal/platform/buildinfo"
 	"github.com/rmotti/payments-boilerplate/internal/platform/config"
@@ -91,7 +92,11 @@ func run() error {
 		repositories.NewPaymentRepository(db.GORM),
 		stripeadapter.NewCheckout(cfg.StripeSecretKey, cfg.StripeSuccessURL, cfg.StripeCancelURL),
 	)
-	apiHandler := httpserver.NewAPIHandler(healthService, orderService, checkoutService)
+	webhookService := webhookapp.NewService(
+		stripeadapter.NewWebhook(cfg.StripeWebhookSecret),
+		repositories.NewWebhookRepository(db.SQL),
+	)
+	apiHandler := httpserver.NewAPIHandler(healthService, orderService, checkoutService, webhookService)
 	server := httpserver.New(httpserver.Config{
 		Address:         cfg.HTTPAddress,
 		ShutdownTimeout: cfg.ShutdownTimeout,

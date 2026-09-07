@@ -42,7 +42,7 @@ está registrada no [ADR 0010](decisions/0010-route-access-model.md):
 | `POST /v1/orders` | Header `X-API-Key` obrigatório |
 | `POST /v1/orders/{orderId}/checkout` | Header `X-API-Key` obrigatório |
 | `GET /v1/orders/{orderId}` | Header `X-API-Key` obrigatório |
-| `POST /v1/webhooks/stripe` — Fase 3 | Sem API key; assinatura Stripe obrigatória |
+| `POST /v1/webhooks/stripe` | Sem API key; assinatura Stripe obrigatória |
 | `GET /health` | Público, com resposta mínima |
 | `GET /docs` e `GET /openapi.yaml` | Públicos enquanto a documentação estiver habilitada; o comando `api` atual os habilita em todos os ambientes |
 
@@ -169,23 +169,54 @@ distingue esses casos.
 O `status` do pedido usa vocabulario comercial (`pending`, `paid`, `cancelled`,
 `expired`) e nao os estados financeiros da cobranca. Uma tentativa recusada nao
 altera o pedido, que permanece `pending` ate ser pago, cancelado ou expirado.
-Até a implementação da Fase 3, o endpoint continuará retornando `pending` mesmo
-depois que a Stripe concluir o pagamento.
+O pedido passa a `paid` quando o worker processar o evento confirmado pela
+Stripe. Enquanto a Fase 3 não estiver completa, o webhook já registra o evento
+de forma durável, mas o consumo assíncrono que aplica a transição ainda será
+implementado.
 
-### `POST /v1/webhooks/stripe` — planejado para a Fase 3
+### `POST /v1/webhooks/stripe`
 
-Este endpoint ainda não existe no runtime nem no contrato OpenAPI atual. Quando
-for implementado, receberá eventos assinados pela Stripe.
+Recebe eventos assinados pela Stripe. Não é um endpoint destinado ao sistema
+integrador e não usa a chave de integração: a confiança vem da verificação
+criptográfica do header `Stripe-Signature` sobre os bytes exatos do corpo,
+antes de qualquer desserialização.
 
-Não será um endpoint destinado ao sistema integrador. O header
-`Stripe-Signature` deverá ser verificado sobre o corpo bruto antes que o evento
-seja aceito e persistido.
+A operação apenas registra o evento de forma durável e cria, na mesma
+transação, a mensagem de outbox correspondente. Nenhum estado de pagamento muda
+dentro da requisição; isso pertence ao worker.
 
-O Swagger documentará esse endpoint, mas não tentará fabricar assinaturas
-válidas. Os testes serão feitos com a Stripe CLI e fixtures controladas.
+A Stripe encerra as tentativas apenas diante de um `2xx` e reenvia o evento
+diante de qualquer outra resposta, `400` incluído. Por isso o `2xx` só aparece
+quando o evento está gravado; os códigos de erro se distinguem entre si para
+quem opera a instalação, não para mudar o que a Stripe faz:
 
-O mapeamento dos eventos está documentado no
-[plano da integração com Stripe](providers/stripe.md).
+| Situação | Status |
+| --- | --- |
+| Evento novo aceito e enfileirado | `202` |
+| Evento já recebido antes | `200` |
+| Tipo de evento não tratado, apenas registrado | `200` |
+| Assinatura ausente, inválida ou fora da janela de tempo | `400` |
+| Corpo acima do limite do endpoint | `500` |
+| Falha ao registrar o evento | `500` |
+
+O `400` de assinatura usa o código estável `invalid_signature` e não distingue
+uma assinatura ausente de uma forjada ou expirada, para não revelar a um
+atacante qual das três ocorreu. O corpo acima do limite responde `500`, e não
+`400`, porque a causa é o limite configurado localmente: é algo que a
+instalação conserta e que a entrega seguinte resolve, ao contrário de uma
+assinatura que nunca vai verificar. A Stripe reentrega nos dois casos; a
+distinção existe para que um limite mal dimensionado não se esconda no ruído
+das assinaturas inválidas.
+
+O corpo da resposta segue a estrutura de erro comum, mas a Stripe lê apenas o
+status; ele existe para a observabilidade da própria instalação.
+
+O Swagger documenta o endpoint, mas não fabrica assinaturas válidas. Os testes
+usam fixtures assinadas localmente e a Stripe CLI.
+
+As decisões de resposta e do conteúdo da mensagem estão no
+[ADR 0011](decisions/0011-webhook-reception-and-outbox.md), e o mapeamento dos
+eventos no [plano da integração com Stripe](providers/stripe.md).
 
 ### `GET /health`
 

@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -166,6 +167,14 @@ type CreateCheckoutParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
+// ReceiveStripeWebhookParams defines parameters for ReceiveStripeWebhook.
+type ReceiveStripeWebhookParams struct {
+	// StripeSignature Assinatura do corpo bruto. Declarado como opcional para que a
+	// ausencia seja tratada pelo mesmo caminho de uma assinatura
+	// invalida, com o codigo de erro invalid_signature.
+	StripeSignature *string `json:"Stripe-Signature,omitempty"`
+}
+
 // CreateOrderJSONRequestBody defines body for CreateOrder for application/json ContentType.
 type CreateOrderJSONRequestBody = CreateOrderRequest
 
@@ -183,6 +192,9 @@ type ServerInterface interface {
 	// CreateCheckout Cria ou recupera uma sessao hospedada de pagamento.
 	// (POST /v1/orders/{orderId}/checkout)
 	CreateCheckout(w http.ResponseWriter, r *http.Request, orderId OrderId, params CreateCheckoutParams)
+	// ReceiveStripeWebhook Recebe um evento assinado pela Stripe.
+	// (POST /v1/webhooks/stripe)
+	ReceiveStripeWebhook(w http.ResponseWriter, r *http.Request, params ReceiveStripeWebhookParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -333,6 +345,47 @@ func (siw *ServerInterfaceWrapper) CreateCheckout(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// ReceiveStripeWebhook operation middleware
+func (siw *ServerInterfaceWrapper) ReceiveStripeWebhook(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ReceiveStripeWebhookParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Stripe-Signature" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Stripe-Signature")]; found {
+		var StripeSignature string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Stripe-Signature", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Stripe-Signature", valueList[0], &StripeSignature, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Stripe-Signature", Err: err})
+			return
+		}
+
+		params.StripeSignature = &StripeSignature
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReceiveStripeWebhook(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -457,6 +510,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/orders", wrapper.CreateOrder)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/orders/{orderId}", wrapper.GetOrder)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/orders/{orderId}/checkout", wrapper.CreateCheckout)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/webhooks/stripe", wrapper.ReceiveStripeWebhook)
 
 	return m
 }
@@ -774,6 +828,59 @@ func (response CreateCheckout502JSONResponse) VisitCreateCheckoutResponse(w http
 	return err
 }
 
+type ReceiveStripeWebhookRequestObject struct {
+	Params ReceiveStripeWebhookParams
+	Body   io.Reader
+}
+
+type ReceiveStripeWebhookResponseObject interface {
+	VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error
+}
+
+type ReceiveStripeWebhook200Response struct {
+}
+
+func (response ReceiveStripeWebhook200Response) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type ReceiveStripeWebhook202Response struct {
+}
+
+func (response ReceiveStripeWebhook202Response) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+	w.WriteHeader(202)
+	return nil
+}
+
+type ReceiveStripeWebhook400JSONResponse Error
+
+func (response ReceiveStripeWebhook400JSONResponse) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReceiveStripeWebhook500JSONResponse Error
+
+func (response ReceiveStripeWebhook500JSONResponse) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetHealth Retorna a disponibilidade do processo e de suas dependencias.
@@ -788,6 +895,9 @@ type StrictServerInterface interface {
 	// CreateCheckout Cria ou recupera uma sessao hospedada de pagamento.
 	// (POST /v1/orders/{orderId}/checkout)
 	CreateCheckout(ctx context.Context, request CreateCheckoutRequestObject) (CreateCheckoutResponseObject, error)
+	// ReceiveStripeWebhook Recebe um evento assinado pela Stripe.
+	// (POST /v1/webhooks/stripe)
+	ReceiveStripeWebhook(ctx context.Context, request ReceiveStripeWebhookRequestObject) (ReceiveStripeWebhookResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -939,49 +1049,93 @@ func (sh *strictHandler) CreateCheckout(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
+// ReceiveStripeWebhook operation middleware
+func (sh *strictHandler) ReceiveStripeWebhook(w http.ResponseWriter, r *http.Request, params ReceiveStripeWebhookParams) {
+	var request ReceiveStripeWebhookRequestObject
+
+	request.Params = params
+
+	request.Body = r.Body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ReceiveStripeWebhook(ctx, request.(ReceiveStripeWebhookRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ReceiveStripeWebhook")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ReceiveStripeWebhookResponseObject); ok {
+		if err := validResponse.VisitReceiveStripeWebhookResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
 // Stored as a slice of fixed-width chunks rather than one concatenated
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"dCvYo0b1KpuLkTgIFeOfAwA=",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

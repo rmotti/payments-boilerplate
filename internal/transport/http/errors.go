@@ -12,6 +12,7 @@ import (
 const (
 	codeInvalidRequest         = "invalid_request"
 	codeUnauthorized           = "unauthorized"
+	codeInvalidSignature       = "invalid_signature"
 	codeProductNotFound        = "product_not_found"
 	codeOrderNotFound          = "order_not_found"
 	codeIdempotencyKeyConflict = "idempotency_key_conflict"

@@ -29,6 +29,17 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   antes da resposta, validado por um pagamento completo no sandbox.
 - Idempotência transparente em criação de pedidos e checkouts, além de
   `GET /v1/orders/{orderId}` para consultar o estado local.
+- `POST /v1/webhooks/stripe`, público na rede e autenticado pela verificação da
+  assinatura sobre os bytes brutos da requisição, com proteção contra replay
+  pela janela de tolerância e limite de corpo próprio.
+- Inbox e outbox gravadas na mesma transação, com deduplicação garantida pelo
+  índice único do evento do provedor e mensagem que referencia o evento em vez
+  de copiar o payload da Stripe. Testes de integração cobrem o rollback da
+  inbox quando a outbox falha, entregas concorrentes do mesmo evento e a
+  unicidade imposta pelo próprio schema.
+- Decisão de recepção de webhooks da Fase 3: contrato de resposta por
+  situação, que define quando o provedor deve reentregar, e mensagem de
+  outbox por referência ao evento, sem copiar o payload do provedor.
 
 ### Changed
 

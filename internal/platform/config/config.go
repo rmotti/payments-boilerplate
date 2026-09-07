@@ -100,6 +100,9 @@ func (c Config) ValidateStripe() error {
 	if c.StripeSecretKey == "" {
 		return errors.New("STRIPE_SECRET_KEY is required for the API")
 	}
+	if c.StripeWebhookSecret == "" {
+		return errors.New("STRIPE_WEBHOOK_SECRET is required for the API")
+	}
 	if err := validateReturnURL("STRIPE_SUCCESS_URL", c.StripeSuccessURL); err != nil {
 		return err
 	}

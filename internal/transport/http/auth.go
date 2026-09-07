@@ -41,5 +41,8 @@ func apiKeyAuthenticationMiddleware(verifier APIKeyVerifier) openapi.StrictMiddl
 }
 
 func publicOperation(operationID string) bool {
-	return operationID == "GetHealth"
+	// The webhook is reachable without an API key because the provider has no
+	// way to hold one. Its trust comes from the signature over the raw body,
+	// verified inside the handler, not from this layer.
+	return operationID == "GetHealth" || operationID == "ReceiveStripeWebhook"
 }

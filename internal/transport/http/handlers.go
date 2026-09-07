@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	orderapp "github.com/rmotti/payments-boilerplate/internal/application/orders"
 	paymentapp "github.com/rmotti/payments-boilerplate/internal/application/payments"
+	webhookapp "github.com/rmotti/payments-boilerplate/internal/application/webhooks"
 	orderdomain "github.com/rmotti/payments-boilerplate/internal/domain/orders"
 	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/transport/http/openapi"
@@ -27,18 +29,29 @@ type CheckoutCreator interface {
 	CreateCheckout(ctx context.Context, in paymentapp.CreateInput) (paymentapp.Checkout, error)
 }
 
+// WebhookReceiver durably accepts one verified provider event.
+type WebhookReceiver interface {
+	Receive(ctx context.Context, in webhookapp.ReceiveInput) (webhookapp.Outcome, error)
+}
+
 // APIHandler implements the generated strict OpenAPI contract.
 type APIHandler struct {
 	health    *health.Service
 	orders    OrderCreator
 	checkouts CheckoutCreator
+	webhooks  WebhookReceiver
 }
 
 // NewAPIHandler composes the HTTP handlers required by the OpenAPI contract.
 // A nil orders service makes order operations answer 501, which is what the
 // worker wants: it shares the contract but only serves health.
-func NewAPIHandler(healthService *health.Service, orders OrderCreator, checkouts CheckoutCreator) *APIHandler {
-	return &APIHandler{health: healthService, orders: orders, checkouts: checkouts}
+func NewAPIHandler(
+	healthService *health.Service,
+	orders OrderCreator,
+	checkouts CheckoutCreator,
+	webhooks WebhookReceiver,
+) *APIHandler {
+	return &APIHandler{health: healthService, orders: orders, checkouts: checkouts, webhooks: webhooks}
 }
 
 // GetHealth returns aggregate process readiness.
@@ -174,4 +187,69 @@ func createCheckoutError(ctx context.Context, err error) (openapi.CreateCheckout
 	default:
 		return nil, fmt.Errorf("create checkout: %w", err)
 	}
+}
+
+// ReceiveStripeWebhook durably accepts a signed provider event.
+//
+// The status code decides whether the provider keeps the event alive: Stripe
+// ends its retries only on 2xx and redelivers on anything else, 400 included.
+// So the rule is to answer 2xx only once the event is durably stored, and to
+// use the non-2xx codes to say why it was not. See ADR 0011.
+func (h *APIHandler) ReceiveStripeWebhook(
+	ctx context.Context,
+	request openapi.ReceiveStripeWebhookRequestObject,
+) (openapi.ReceiveStripeWebhookResponseObject, error) {
+	if h.webhooks == nil {
+		return nil, ErrNotServed
+	}
+
+	rawBody, err := readWebhookBody(request.Body)
+	if err != nil {
+		// The body could not be read whole, so the signature could never be
+		// checked. Unlike a forged signature this is our own limit, and a
+		// redelivery works once it is raised, so the provider must retry.
+		return nil, fmt.Errorf("%w: %w", webhookapp.ErrPayloadTooLarge, err)
+	}
+
+	var signature string
+	if request.Params.StripeSignature != nil {
+		signature = *request.Params.StripeSignature
+	}
+
+	outcome, err := h.webhooks.Receive(ctx, webhookapp.ReceiveInput{
+		RawBody:       rawBody,
+		Signature:     signature,
+		CorrelationID: correlationIDFromContext(ctx),
+	})
+	if err != nil {
+		if errors.Is(err, webhookapp.ErrInvalidSignature) {
+			// Absent, forged and expired signatures answer the same way, so
+			// the response never tells an attacker which of the three it was.
+			// Stripe will still redeliver, and every attempt will fail the same
+			// way until the endpoint secret is fixed; the invalid-signature
+			// metric is what turns that into an alert.
+			return openapi.ReceiveStripeWebhook400JSONResponse(
+				newError(ctx, codeInvalidSignature, webhookapp.ErrInvalidSignature.Error()),
+			), nil
+		}
+		// Storage failed. Answering 500 is deliberate: the provider is the only
+		// thing that can deliver this event again.
+		return nil, fmt.Errorf("receive stripe webhook: %w", err)
+	}
+
+	if outcome == webhookapp.OutcomeAccepted {
+		return openapi.ReceiveStripeWebhook202Response{}, nil
+	}
+	// Duplicate or ignored: nothing was queued, and nothing should be retried.
+	return openapi.ReceiveStripeWebhook200Response{}, nil
+}
+
+// readWebhookBody reads the request bytes exactly as they arrived. They must
+// reach signature verification untouched: parsing and re-encoding would reorder
+// keys and drop whitespace, and the recomputed signature would never match.
+func readWebhookBody(body io.Reader) ([]byte, error) {
+	if body == nil {
+		return nil, nil
+	}
+	return io.ReadAll(body)
 }
