@@ -14,6 +14,18 @@ a fonte executável do contrato quando a implementação começar.
 - Erros: estrutura consistente com código, mensagem e identificador de
   correlação.
 
+```json
+{
+  "code": "invalid_request",
+  "message": "quantity must be between 1 and 1000",
+  "correlationId": "6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e"
+}
+```
+
+`code` é estável e adequado a tratamento programático. `correlationId` repete o
+header `X-Correlation-ID` da resposta; o cliente pode enviá-lo na requisição
+para correlacionar seus próprios logs com os da API.
+
 O prefixo `/v1` identifica a primeira geração do contrato HTTP. Enquanto o
 projeto estiver na série `v0.x`, ele permanece experimental e pode sofrer
 mudanças incompatíveis entre versões minor. Consulte a
@@ -24,7 +36,17 @@ mudanças incompatíveis entre versões minor. Consulte a
 ### `POST /v1/orders`
 
 Cria um pedido a partir de um produto conhecido pelo servidor. O cliente não
-define livremente o valor que será cobrado.
+define livremente o valor que será cobrado: `amount` e `currency` são
+calculados a partir do catálogo e da quantidade, e qualquer campo de valor
+enviado na requisição é ignorado.
+
+Headers:
+
+| Header | Obrigatório | Regra |
+| --- | --- | --- |
+| `Idempotency-Key` | sim | Chave opaca de 1 a 255 caracteres, escolhida pelo cliente. |
+
+Requisição:
 
 ```json
 {
@@ -33,14 +55,36 @@ define livremente o valor que será cobrado.
 }
 ```
 
+`productId` deve ter de 1 a 128 caracteres e existir no catálogo. `quantity`
+deve estar entre 1 e 1000.
+
+Resposta `201 Created`:
+
 ```json
 {
-  "id": "ord_01J...",
+  "id": "ord_3f2504e04f8911d39a0c0305e82c3301",
   "status": "pending",
   "amount": 10000,
   "currency": "BRL"
 }
 ```
+
+Erros:
+
+| Status | `code` | Quando |
+| --- | --- | --- |
+| `400` | `invalid_request` | Header ausente, JSON inválido ou campo fora das regras. |
+| `404` | `product_not_found` | `productId` não existe no catálogo. |
+| `409` | `idempotency_key_conflict` | A `Idempotency-Key` já foi usada por outro pedido. |
+| `413` | `invalid_request` | Corpo maior que o limite aceito pela API. |
+| `500` | `internal_error` | Falha inesperada; a causa fica apenas nos logs. |
+
+Hoje, reenviar a mesma chave devolve `409`. A repetição transparente da criação,
+devolvendo o pedido original quando a requisição for idêntica, é o próximo item
+do roadmap.
+
+Na versão 0.1 o catálogo é fixo e contém apenas `product_demo`, precificado em
+R$ 100,00 (`10000` centavos). Gerenciamento de produtos está fora do contrato.
 
 ### `POST /v1/orders/{orderId}/checkout`
 

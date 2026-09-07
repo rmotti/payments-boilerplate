@@ -9,6 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rmotti/payments-boilerplate/internal/adapters/catalog"
+	"github.com/rmotti/payments-boilerplate/internal/adapters/postgres/repositories"
+	"github.com/rmotti/payments-boilerplate/internal/application/orders"
 	"github.com/rmotti/payments-boilerplate/internal/platform/buildinfo"
 	"github.com/rmotti/payments-boilerplate/internal/platform/config"
 	"github.com/rmotti/payments-boilerplate/internal/platform/database"
@@ -72,7 +75,8 @@ func run() error {
 	healthService := health.New(cfg.ServiceName, buildinfo.Version, map[string]health.Checker{
 		"postgres": db.Ping,
 	})
-	apiHandler := httpserver.NewAPIHandler(healthService)
+	orderService := orders.NewService(catalog.Demo(), repositories.NewOrderRepository(db.GORM))
+	apiHandler := httpserver.NewAPIHandler(healthService, orderService)
 	server := httpserver.New(httpserver.Config{
 		Address:         cfg.HTTPAddress,
 		ShutdownTimeout: cfg.ShutdownTimeout,

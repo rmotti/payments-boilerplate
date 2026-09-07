@@ -39,7 +39,9 @@ múltiplos provedores.
 ## Fase 2 — Primeiro pagamento vertical
 
 - [x] Criar esquema de `Order`, `Payment`, `PaymentAttempt` e `WebhookEvent`.
-- [ ] Criar pedido com valor calculado no servidor.
+- [x] Criar pedido com valor calculado no servidor.
+- [ ] Definir o modelo de acesso às rotas e documentar quais operações permanecem públicas.
+- [ ] Proteger criação, checkout e consulta com autenticação da integração e autorização sobre o pedido.
 - [ ] Integrar Stripe Checkout hospedado em sandbox com cartão em BRL.
 - [ ] Implementar idempotência da criação.
 - [ ] Relacionar a sessão da Stripe ao pedido e à tentativa locais.
@@ -65,6 +67,8 @@ múltiplos provedores.
 - [ ] Verificar que exemplos OpenAPI correspondem às respostas reais.
 - [ ] Testar interrupções entre PostgreSQL, relay, RabbitMQ e consumer.
 - [ ] Publicar métricas de outbox, filas, retries e DLQ.
+- [ ] Aplicar rate limiting às operações públicas e aos endpoints sujeitos a abuso.
+- [ ] Desabilitar ou proteger o Swagger UI fora do ambiente de desenvolvimento.
 - [ ] Revisar logs, secrets e tratamento de dados pessoais.
 - [ ] Criar guia de implantação e checklist operacional.
 - [ ] Criar guia de contribuição e templates do repositório.

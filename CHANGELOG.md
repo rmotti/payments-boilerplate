@@ -17,5 +17,9 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Decisões arquiteturais para Go, PostgreSQL, RabbitMQ e transactional outbox.
 - Convenções, política de versionamento e política de suporte.
 - Stripe Checkout como primeiro provedor e plano de integração em sandbox.
+- Esquema de `orders`, `payments`, `payment_attempts` e `webhook_events`.
+- `POST /v1/orders` com valor e moeda calculados no servidor a partir de um
+  catálogo fixo, header `Idempotency-Key` obrigatório e erros JSON com código
+  estável e identificador de correlação.
 
 [Unreleased]: https://github.com/rmotti/payments-boilerplate/commits/main

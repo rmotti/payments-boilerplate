@@ -88,7 +88,7 @@ func run() error {
 		"postgres": db.Ping,
 		"rabbitmq": broker.Ping,
 	})
-	apiHandler := httpserver.NewAPIHandler(healthService)
+	apiHandler := httpserver.NewAPIHandler(healthService, nil)
 	server := httpserver.New(httpserver.Config{
 		Address:         cfg.HTTPAddress,
 		ShutdownTimeout: cfg.ShutdownTimeout,

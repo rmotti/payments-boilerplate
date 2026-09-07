@@ -50,6 +50,16 @@ curl --fail --show-error http://localhost:8080/health
 curl --fail --show-error http://localhost:8080/openapi.yaml
 ```
 
+Crie um pedido de demonstração. O valor vem do catálogo do servidor, nunca da
+requisição:
+
+```bash
+curl --fail --show-error http://localhost:8080/v1/orders \
+  -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"productId":"product_demo","quantity":1}'
+```
+
 Para incluir o ambiente de observabilidade:
 
 ```bash
