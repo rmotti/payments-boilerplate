@@ -15,6 +15,8 @@ múltiplos provedores.
 - [x] Definir transactional outbox para publicação confiável.
 - [x] Adotar Apache License 2.0 para código, documentação e exemplos.
 - [x] Definir convenções de código, API, banco, mensageria e Git.
+- [x] Definir o fluxo de encerramento de entregas com revisão documental e
+  checklist de pull request.
 - [x] Adotar Semantic Versioning e definir a série experimental `v0.x`.
 - [x] Definir suporte à minor mais recente em melhor esforço e sem SLA.
 - [x] Escolher Stripe Checkout como primeiro provedor de pagamentos.

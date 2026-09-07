@@ -42,7 +42,7 @@ está registrada no [ADR 0010](decisions/0010-route-access-model.md):
 | `POST /v1/orders` | Header `X-API-Key` obrigatório |
 | `POST /v1/orders/{orderId}/checkout` | Header `X-API-Key` obrigatório |
 | `GET /v1/orders/{orderId}` | Header `X-API-Key` obrigatório |
-| `POST /v1/webhooks/stripe` | Sem API key; assinatura Stripe obrigatória |
+| `POST /v1/webhooks/stripe` — Fase 3 | Sem API key; assinatura Stripe obrigatória |
 | `GET /health` | Público, com resposta mínima |
 | `GET /docs` e `GET /openapi.yaml` | Públicos enquanto a documentação estiver habilitada; o comando `api` atual os habilita em todos os ambientes |
 
@@ -160,7 +160,7 @@ distingue esses casos.
 ```json
 {
   "id": "ord_0123456789abcdef0123456789abcdef",
-  "status": "paid",
+  "status": "pending",
   "amount": 10000,
   "currency": "BRL"
 }
@@ -169,12 +169,17 @@ distingue esses casos.
 O `status` do pedido usa vocabulario comercial (`pending`, `paid`, `cancelled`,
 `expired`) e nao os estados financeiros da cobranca. Uma tentativa recusada nao
 altera o pedido, que permanece `pending` ate ser pago, cancelado ou expirado.
+Até a implementação da Fase 3, o endpoint continuará retornando `pending` mesmo
+depois que a Stripe concluir o pagamento.
 
-### `POST /v1/webhooks/stripe`
+### `POST /v1/webhooks/stripe` — planejado para a Fase 3
 
-Recebe eventos assinados pela Stripe. Não é um endpoint destinado ao sistema
-integrador. O header `Stripe-Signature` deve ser verificado sobre o corpo bruto
-antes que o evento seja aceito e persistido.
+Este endpoint ainda não existe no runtime nem no contrato OpenAPI atual. Quando
+for implementado, receberá eventos assinados pela Stripe.
+
+Não será um endpoint destinado ao sistema integrador. O header
+`Stripe-Signature` deverá ser verificado sobre o corpo bruto antes que o evento
+seja aceito e persistido.
 
 O Swagger documentará esse endpoint, mas não tentará fabricar assinaturas
 válidas. Os testes serão feitos com a Stripe CLI e fixtures controladas.
@@ -184,8 +189,9 @@ O mapeamento dos eventos está documentado no
 
 ### `GET /health`
 
-Indica se o processo está disponível. A definição de readiness e a exposição de
-detalhes das dependências serão decididas com a infraestrutura.
+Indica se o processo e suas dependências obrigatórias estão disponíveis. Na API,
+o resultado inclui PostgreSQL; no worker, inclui PostgreSQL e RabbitMQ. Retorna
+`200` quando todos os checks estão `up` e `503` quando algum está `down`.
 
 ### `GET /docs`
 

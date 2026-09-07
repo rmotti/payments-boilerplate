@@ -3,17 +3,34 @@
 API boilerplate open source para integrar pagamentos de forma segura, previsível
 e reutilizável.
 
-O projeto será uma API headless escrita em Go que orquestra a Stripe por meio
-do Checkout hospedado. Sua interface de demonstração será uma documentação
-OpenAPI com Swagger UI. Eventos serão
-processados de forma assíncrona e durável com PostgreSQL e RabbitMQ. O projeto
-não será um gateway, uma instituição financeira nem um sistema que captura ou
-armazena dados completos de cartão.
+O projeto é uma API headless escrita em Go que já cria pedidos com preço
+calculado no servidor e abre Stripe Checkout hospedado em sandbox. O contrato
+OpenAPI e o Swagger UI formam sua interface de demonstração. A confirmação por
+webhook e o processamento assíncrono durável com PostgreSQL e RabbitMQ serão
+implementados na Fase 3. O projeto não é um gateway, uma instituição financeira
+nem um sistema que captura ou armazena dados completos de cartão.
 
 > [!IMPORTANT]
-> O projeto está no primeiro fluxo vertical. Ainda não existe uma versão pronta para
-> produção e o uso deste código não garante conformidade com PCI DSS, LGPD ou
+> As Fases 0, 1 e 2 estão concluídas, mas ainda não existe uma versão pronta para
+> produção. O uso deste código não garante conformidade com PCI DSS, LGPD ou
 > qualquer outra obrigação regulatória.
+
+## Estado atual e roadmap
+
+Este quadro é apenas um resumo. O checklist completo e sua ordem de execução
+ficam em [docs/roadmap.md](docs/roadmap.md), que é a fonte de verdade.
+
+| Etapa | Estado | Resultado principal |
+| --- | --- | --- |
+| Fase 0 — Definições de fundação | Concluída | Visão, limites, decisões técnicas e convenções |
+| Fase 1 — Fundação executável | Concluída | API, banco, migrations, observabilidade, CI e deploy documentado |
+| Fase 2 — Primeiro pagamento vertical | Concluída | API key, pedido idempotente, consulta e Stripe Checkout em BRL |
+| Fase 3 — Confirmação assíncrona confiável | Próxima | Webhook assinado, inbox/outbox, RabbitMQ, worker e Pix |
+| Fase 4 — Qualidade para publicação | Planejada | Hardening, testes de falha, métricas e guias operacionais |
+
+Hoje o pagamento pode terminar como `paid` na Stripe, mas pedido, pagamento e
+tentativa permanecem `pending` localmente. Somente um webhook verificado poderá
+alterar esse estado depois da implementação da Fase 3.
 
 ## Desenvolvimento local
 
@@ -21,7 +38,7 @@ Pré-requisitos:
 
 - Go 1.26 ou 1.27;
 - Docker com Docker Compose;
-- Make, opcional, para os atalhos documentados.
+- Make, opcional, para os atalhos documentados;
 - uma conta Stripe com chave secreta de teste (`sk_test_...`) para abrir o
   checkout real.
 
@@ -50,6 +67,9 @@ Execute API e worker em terminais separados:
 make run-api
 make run-worker
 ```
+
+Neste momento o processo `worker` conecta PostgreSQL e RabbitMQ e publica seu
+healthcheck, mas ainda não consome mensagens. O consumer entra na Fase 3.
 
 A API fica disponível em `http://localhost:8080`, a documentação em
 `http://localhost:8080/docs/` e o painel local do RabbitMQ em
@@ -127,9 +147,9 @@ docker compose --profile app up --build
   suficientes para que outra pessoa consiga adaptar o projeto.
 - Tornar falhas, retries e mudanças de estado explícitos e auditáveis.
 
-## Escopo inicial
+## Escopo da versão 0.1
 
-A primeira entrega será deliberadamente pequena:
+O objetivo da versão `0.1.0` é deliberadamente pequeno:
 
 - Pagamento único para comércio eletrônico.
 - Uma moeda inicial: BRL.
@@ -162,6 +182,10 @@ ausente de inválida.
 A pessoa usuária deste projeto é quem desenvolve o sistema que venderá o produto
 ou serviço. No MVP, o Swagger UI ocupa o lugar do sistema que futuramente
 consumirá a API.
+
+O diagrama abaixo representa o fluxo-alvo da versão `0.1.0`. A parte entre o
+webhook da Stripe e o retorno local `paid` pertence à Fase 3 e ainda não faz
+parte do runtime atual.
 
 ```mermaid
 sequenceDiagram
@@ -228,7 +252,7 @@ o Swagger UI representa no diagrama.
 | Contrato da API | OpenAPI contract-first |
 | Geração de código | `oapi-codegen` strict server |
 | Banco de dados | PostgreSQL |
-| Acesso ao banco | `pgx` + GORM para CRUD + `sqlc` para SQL crítico |
+| Acesso ao banco | `pgx` + GORM; `sqlc` reservado para SQL crítico explícito |
 | Mensageria | RabbitMQ |
 | Confiabilidade de publicação | Transactional outbox |
 | Provedor | Stripe Checkout hospedado |
@@ -239,10 +263,11 @@ o Swagger UI representa no diagrama.
 ## Documentação
 
 - [Visão e escopo](docs/product-vision.md)
-- [Arquitetura inicial](docs/architecture.md)
-- [Contrato inicial da API](docs/api.md)
+- [Arquitetura](docs/architecture.md)
+- [Contrato da API](docs/api.md)
 - [Integração com Stripe](docs/providers/stripe.md)
 - [Convenções do projeto](docs/conventions.md)
+- [Fluxo de encerramento de entregas](docs/delivery-workflow.md)
 - [Versionamento](docs/versioning.md)
 - [Métricas prioritárias](docs/metrics.md)
 - [Roadmap](docs/roadmap.md)

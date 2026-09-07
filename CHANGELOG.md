@@ -30,4 +30,12 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Idempotência transparente em criação de pedidos e checkouts, além de
   `GET /v1/orders/{orderId}` para consultar o estado local.
 
+### Changed
+
+- Documentação sincronizada com o fim da Fase 2, distinguindo o checkout já
+  executável do pipeline assíncrono planejado para a Fase 3 e resumindo o estado
+  do roadmap no README.
+- Definição de pronto documental e template de pull request adicionados para
+  manter documentação, roadmap e changelog alinhados a cada entrega.
+
 [Unreleased]: https://github.com/rmotti/payments-boilerplate/commits/main
