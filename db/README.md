@@ -117,17 +117,18 @@ dialogo com o provedor; o pagamento e a conclusao.
 
 ### webhook_events
 
-O inbox duravel dos eventos recebidos. A linha e gravada dentro da requisicao do
-webhook, antes de qualquer efeito de negocio, e so depois disso a API responde
-sucesso ao provedor.
+O schema do inbox duravel dos eventos recebidos ja existe, mas nenhuma linha e
+gravada pelo runtime atual. Na Fase 3, a linha sera inserida dentro da requisicao
+do webhook, antes de qualquer efeito de negocio, e so depois disso a API
+respondera sucesso ao provedor.
 
-O evento e guardado em duas formas. `raw_payload` sao os bytes exatos que o
-provedor assinou, preservados porque `jsonb` reordena chaves e descarta
-formatacao, e porque esses bytes desaparecem junto com a requisicao. `payload` e
-o mesmo evento desserializado, para consulta e reprocessamento.
+O evento sera guardado em duas formas. `raw_payload` preservara os bytes exatos
+que o provedor assinou, pois `jsonb` reordena chaves e descarta formatacao, e
+esses bytes desaparecem junto com a requisicao. `payload` guardara o mesmo
+evento desserializado, para consulta e reprocessamento.
 
-`attempts` e `last_error` sustentam retry com backoff e diagnostico do que parou
-na dead-letter queue.
+`attempts` e `last_error` sustentarao retry com backoff e diagnostico do que
+parou na dead-letter queue.
 
 ## Relacionamentos
 
@@ -169,6 +170,10 @@ nao e `failed` nem `cancelled`. Cobrancas mortas saem do indice e viram
 historico, entao um retry e sempre possivel. Qualquer outro estado ocupa a vaga
 unica do pedido.
 
+No runtime da Fase 2, uma falha ambigua no provedor mantem a tentativa ativa e
+deve ser retomada com a mesma `Idempotency-Key`. As transicoes que liberam uma
+nova tentativa entram na Fase 3.
+
 O efeito colateral e que um webhook fora de ordem nao consegue reviver uma
 cobranca antiga enquanto existir uma liquidada, porque a transicao esbarra no
 mesmo indice. A protecao contra regressao de estado nasce como constraint, e nao
@@ -188,25 +193,30 @@ POST /v1/orders
   INSERT orders                      status pending
 
 POST /v1/orders/{orderId}/checkout
-  INSERT payments                    status pending
-  INSERT payment_attempts            status created, guarda a sessao do provedor
+  BEGIN
+    INSERT payments                  status pending
+    INSERT payment_attempts          status created
+  COMMIT
+  -> cria a sessao no provedor
+  UPDATE payment_attempts            status pending, guarda sessao, URL e expiracao
 
-webhook do provedor
+Fase 3: webhook do provedor
   BEGIN
     INSERT webhook_events            status pending, dentro da requisicao
-    INSERT outbox_events             mesma transacao, Fase 3
+    INSERT outbox_events             mesma transacao
   COMMIT
   -> resposta 2xx ao provedor
 
-worker
+Fase 3: worker
   UPDATE payment_attempts            resultado da tentativa
   UPDATE payments                    estado financeiro consolidado
   UPDATE orders                      status paid, na mesma transacao
   UPDATE webhook_events              status processed
 ```
 
-As tres ultimas atualizacoes ocorrem em uma unica transacao. E o que impede o
-pedido dizer `paid` enquanto a cobranca ainda diz `processing`.
+Na Fase 3, as quatro atualizacoes do worker ocorrerao em uma unica transacao. E
+isso que impedira o pedido de dizer `paid` enquanto a cobranca ainda estiver
+`processing`.
 
 ## Ainda nao modelado
 

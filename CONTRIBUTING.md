@@ -2,8 +2,7 @@
 
 Obrigado pelo interesse em contribuir com o Payments Boilerplate.
 
-O fluxo detalhado de contribuição será definido junto com as convenções de
-desenvolvimento. Enquanto o projeto estiver na fase de fundação:
+Antes de iniciar uma contribuição:
 
 - Discuta mudanças relevantes em uma issue antes de iniciar uma implementação
   extensa.
@@ -13,6 +12,12 @@ desenvolvimento. Enquanto o projeto estiver na fase de fundação:
   comportamento público da API.
 - Preserve as garantias de idempotência, inbox, outbox e processamento de
   mensagens descritas na [arquitetura](docs/architecture.md).
+
+Toda entrega inclui sua documentação no mesmo pull request. Antes do merge,
+siga o [fluxo de encerramento de entregas](docs/delivery-workflow.md) e preencha
+o checklist apresentado pelo template do pull request. Um item não aplicável
+deve receber uma justificativa curta; a revisão documental não deve ser
+ignorada.
 
 As regras de código, API, banco, mensageria, testes e Git estão em
 [Convenções do projeto](docs/conventions.md). Pull requests serão integrados

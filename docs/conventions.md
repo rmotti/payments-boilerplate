@@ -59,9 +59,12 @@ pelos casos de uso.
 - Nomes de tabelas, colunas e constraints usam `snake_case`.
 - Constraints do banco protegem unicidade, idempotência e referências.
 - Mudanças destrutivas seguem a sequência `expand`, `migrate`, `contract`.
-- Queries relevantes devem ser explícitas e gerar tipos por meio do `sqlc`.
-- GORM é usado para CRUD comum; locks, inbox, outbox, deduplicação e transições
-  condicionais usam SQL explícito com `sqlc`.
+- Queries cuja forma fizer parte da garantia devem ser explícitas e gerar tipos
+  por meio do `sqlc`.
+- Na Fase 2, GORM coordena o CRUD e as transações curtas, enquanto constraints e
+  índices do schema garantem idempotência e concorrência. Locks, polling de
+  inbox/outbox, deduplicação e transições condicionais da Fase 3 deverão usar
+  SQL explícito com `sqlc` quando a forma da query fizer parte da garantia.
 - Models do GORM não são entidades do domínio e hooks não contêm regras de
   negócio.
 - O schema do banco é interno e não deve ser consumido diretamente por
@@ -113,7 +116,14 @@ pelos casos de uso.
 - O título do pull request segue Conventional Commits e se torna a mensagem do
   commit consolidado.
 - O CI obrigatório deve passar antes do merge.
-- Mudanças de comportamento incluem documentação no mesmo pull request.
+- Toda entrega revisa e atualiza a documentação no mesmo pull request.
+- Itens documentais não aplicáveis são justificados no checklist do pull
+  request; a revisão não é omitida.
+- Roadmap, estado no README e changelog são atualizados quando a entrega ou fase
+  correspondente for concluída.
+
+A definição de pronto está detalhada no
+[fluxo de encerramento de entregas](delivery-workflow.md).
 
 Tipos adotados:
 

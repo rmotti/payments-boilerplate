@@ -1,9 +1,14 @@
-# Arquitetura inicial
+# Arquitetura
 
-Este documento descreve as fronteiras e invariantes da API em Go. A aplicação
-usa PostgreSQL como fonte de verdade e RabbitMQ para processamento assíncrono.
+Este documento descreve as fronteiras e invariantes da API em Go e distingue o
+runtime atual da arquitetura-alvo da versão `0.1.0`. Ao fim da Fase 2, a API usa
+PostgreSQL como fonte de verdade e abre Stripe Checkout; o processo `worker`
+apenas verifica PostgreSQL e RabbitMQ e expõe health. Webhook, inbox/outbox,
+relay e consumo assíncrono pertencem à Fase 3.
 
 ## Contexto
+
+O diagrama representa a arquitetura-alvo da versão `0.1.0`:
 
 ```text
 Swagger UI ou sistema do integrador
@@ -33,35 +38,40 @@ Swagger UI ou sistema do integrador
 ```
 
 O checkout coleta os dados de pagamento em uma página hospedada pela Stripe.
-A API cria e consulta suas próprias entidades de negócio e recebe o resultado
-assíncrono por um endpoint de webhook. O Swagger UI documenta e exercita o
-contrato, mas não faz parte do fluxo de produção de quem adotar o projeto.
+A API já cria e consulta suas próprias entidades de negócio. Na Fase 3, ela
+receberá o resultado assíncrono por um endpoint de webhook. O Swagger UI
+documenta e exercita o contrato, mas não faz parte do fluxo de produção de quem
+adotar o projeto.
 
-A API persiste o webhook e uma mensagem de outbox na mesma transação. O relay
-publica a mensagem no RabbitMQ e o worker aplica seus efeitos de forma
-idempotente. API, relay e consumer pertencem ao mesmo código-base.
+Na arquitetura-alvo, a API persistirá o webhook e uma mensagem de outbox na
+mesma transação. O relay publicará a mensagem no RabbitMQ e o worker aplicará
+seus efeitos de forma idempotente. API, relay e consumer pertencerão ao mesmo
+código-base.
 
 ## Responsabilidades
 
 ### Payments API
 
 - Criar o pedido e calcular seu valor no servidor.
-- Gerar e persistir uma chave de idempotência.
+- Receber, validar e persistir a chave de idempotência escolhida pelo integrador.
 - Solicitar a criação do checkout ao provedor.
 - Associar identificadores locais aos identificadores externos.
-- Validar e armazenar eventos recebidos.
-- Criar a mensagem de outbox na mesma transação do evento.
+- Na Fase 3, validar e armazenar eventos recebidos.
+- Na Fase 3, criar a mensagem de outbox na mesma transação do evento.
 - Expor ao sistema integrador o estado conhecido pela API.
 - Publicar um contrato OpenAPI coerente com a implementação.
 
-### Outbox relay
+### Outbox relay — Fase 3
 
 - Buscar mensagens de outbox ainda não publicadas.
 - Publicá-las como persistentes no RabbitMQ.
 - Aguardar publisher confirm antes de marcar a publicação como concluída.
 - Repetir publicações que falharem sem perder a mensagem original.
 
-### Payments worker
+### Payments worker — Fase 3
+
+O binário atual conecta as dependências e serve health, mas ainda não consome
+mensagens. Sua responsabilidade-alvo é:
 
 - Consumir mensagens com confirmação manual.
 - Aplicar transições de estado válidas e idempotentes.
@@ -69,7 +79,7 @@ idempotente. API, relay e consumer pertencem ao mesmo código-base.
 - Aplicar retry com backoff para falhas transitórias.
 - Encaminhar falhas definitivas para uma dead-letter queue.
 
-### RabbitMQ
+### RabbitMQ — uso financeiro na Fase 3
 
 - Manter filas duráveis e mensagens persistentes.
 - Entregar mensagens novamente quando um consumer falhar antes do ack.
@@ -100,28 +110,32 @@ depois de autenticado, o integrador pode operar todos os pedidos da instalação
 
 ```text
 backend do integrador -- X-API-Key ------> rotas de pedido e checkout
-Stripe --------------- Stripe-Signature -> webhook
+Stripe --------------- Stripe-Signature -> webhook (Fase 3)
 infraestrutura -------- rede/probe ------> health
 desenvolvedor ---------- ambiente local --> Swagger UI
 ```
 
 A camada HTTP aplica autenticação por API key às operações de negócio. A
-política nega acesso por padrão e libera explicitamente apenas health e os
-endpoints com autenticação própria, como o webhook assinado. O domínio e os
-casos de uso não conhecem headers ou credenciais.
+política nega acesso por padrão e libera explicitamente apenas health. O
+webhook assinado será uma exceção pública quando entrar na Fase 3. O domínio e
+os casos de uso não conhecem headers ou credenciais.
 
-O Swagger UI e o documento OpenAPI servido pela aplicação ficam disponíveis em
-desenvolvimento e desabilitados por padrão em produção. TLS, gestão de secrets e
-controles de borda continuam sob responsabilidade de quem implanta o projeto.
+O comando `api` atual serve Swagger UI e o documento OpenAPI publicamente em
+qualquer `APP_ENV`. Desabilitar ou proteger essa documentação fora do ambiente
+de desenvolvimento permanece na Fase 4. TLS, gestão de secrets e controles de
+borda continuam sob responsabilidade de quem implanta o projeto.
 
 O modelo completo, alternativas e limitações estão no
 [ADR 0010](decisions/0010-route-access-model.md).
 
-## Modelo de domínio mínimo
+## Modelo de domínio e schema
 
-### Customer
+`Order`, `Payment` e `PaymentAttempt` já possuem entidades Go e persistência.
+`WebhookEvent` possui schema preparado, mas seu caso de uso entra na Fase 3.
 
-Referência local para a pessoa ou organização compradora. Deve armazenar somente
+### Customer — fora da versão 0.1
+
+Não está modelado. Se entrar em uma evolução posterior, deverá armazenar somente
 os dados necessários ao caso de uso.
 
 ### Order
@@ -139,22 +153,23 @@ Representa a operação financeira associada a um pedido e seu estado consolidad
 Registra uma tentativa de criar ou executar a operação no provedor, incluindo a
 chave de idempotência e o identificador externo.
 
-### Refund
+### Refund — evolução posterior
 
 Reservado no modelo para evolução posterior. A automação de reembolsos não faz
 parte da versão 0.1.
 
-### WebhookEvent
+### WebhookEvent — schema pronto, uso na Fase 3
 
 Inbox persistente dos eventos recebidos. Guarda identificador externo, tipo,
 datas de recebimento e processamento, estado do processamento e informação de
 erro suficiente para reprocessamento seguro.
 
-### OutboxEvent
+### OutboxEvent — Fase 3
 
-Registra a intenção de publicar uma mensagem. É criado na mesma transação que o
-`WebhookEvent` e só é marcado como publicado após a confirmação do RabbitMQ.
-Uma publicação pode se repetir, portanto o consumidor continua idempotente.
+Ainda não está modelado. Registrará a intenção de publicar uma mensagem, será
+criado na mesma transação que o `WebhookEvent` e só será marcado como publicado
+após a confirmação do RabbitMQ. Uma publicação poderá se repetir, portanto o
+consumidor continuará idempotente.
 
 ## Estado inicial de pagamento
 
@@ -168,10 +183,14 @@ pending
 succeeded -> partially_refunded -> refunded
 ```
 
-Os estados de reembolso estão previstos para compatibilidade futura, mas não
-precisam de casos de uso públicos na primeira versão.
+Os estados de reembolso já são aceitos pelo schema para compatibilidade futura,
+mas ainda não pertencem à entidade Go nem precisam de casos de uso públicos na
+primeira versão.
 
 ## Invariantes
+
+As invariantes de pedido, preço, checkout e idempotência já são executáveis. As
+que mencionam webhook, outbox, publicação ou consumo descrevem a Fase 3.
 
 - Dinheiro é representado por inteiro na menor unidade e código de moeda.
 - Valor e moeda tornam-se imutáveis quando o checkout é iniciado.
@@ -191,7 +210,7 @@ precisam de casos de uso públicos na primeira versão.
 - Logs usam identificadores e metadados mínimos, nunca secrets ou instrumentos
   completos de pagamento.
 
-## Organização proposta
+## Organização atual
 
 Antes de haver necessidade comprovada de pacotes independentes:
 
@@ -208,7 +227,10 @@ internal/
     orders/
     payments/
   application/
+    orders/
+    payments/
   adapters/
+    catalog/
     postgres/
     rabbitmq/
     payments/
@@ -216,6 +238,7 @@ internal/
   transport/
     http/
   platform/
+    auth/
     config/
     database/
     logging/
@@ -229,9 +252,10 @@ docs/
 tests/
 ```
 
-GORM atende CRUD comum, enquanto `sqlc` gera queries nas quais locks,
-concorrência ou a forma exata do SQL fazem parte da garantia. Goose é a única
-autoridade de migrations e o projeto não usa `AutoMigrate`.
+Os repositories atuais usam GORM com transações curtas e apoiam as garantias de
+concorrência nas constraints do schema. A geração com `sqlc` está preparada
+para o SQL crítico da Fase 3, como locks, polling e transições condicionais.
+Goose é a única autoridade de migrations e o projeto não usa `AutoMigrate`.
 
 ## Implantação inicial
 
@@ -271,11 +295,11 @@ MapEvent(providerEvent) -> domain event
 Operações não usadas não devem ser adicionadas para tentar antecipar todos os
 provedores.
 
-## Garantia de publicação
+## Garantia de publicação — Fase 3
 
 PostgreSQL e RabbitMQ não compartilham uma transação. Publicar diretamente no
 broker depois de salvar o webhook criaria uma janela de perda entre as duas
-operações. O transactional outbox fecha essa janela:
+operações. Na Fase 3, o transactional outbox fechará essa janela:
 
 ```text
 BEGIN
@@ -290,7 +314,7 @@ Se o relay cair depois do confirm e antes de marcar o registro, a mensagem será
 publicada novamente. Por isso a garantia do sistema é entrega pelo menos uma vez
 com efeitos idempotentes, e não entrega exatamente uma vez.
 
-## Topologia inicial do RabbitMQ
+## Topologia inicial do RabbitMQ — Fase 3
 
 ```text
 payments.events exchange
@@ -305,26 +329,42 @@ Exchange, filas e mensagens devem ser duráveis. O consumer usa ack manual e um
 prefetch baixo e configurável. A topologia será declarada pela aplicação de
 forma idempotente.
 
-## Superfície HTTP do MVP
+## Superfície HTTP
+
+Implementada ao fim da Fase 2:
 
 ```text
 POST /v1/orders
 POST /v1/orders/{orderId}/checkout
 GET  /v1/orders/{orderId}
-POST /v1/webhooks/stripe
 GET  /health
 GET  /docs
+GET  /openapi.yaml
 ```
 
-O contrato detalhado está em [Contrato inicial da API](api.md). Endpoints de
-webhook aparecem na especificação para documentação, mas seus testes reais
-exigem uma assinatura válida gerada pelo provedor ou por sua ferramenta local.
+Planejada para a Fase 3:
 
-## Cenários mínimos de teste
+```text
+POST /v1/webhooks/stripe
+```
 
-- Criação normal de pedido e checkout.
-- Repetição da criação com a mesma chave.
-- Timeout depois de o provedor aceitar a operação.
+O contrato executável detalhado está em [Contrato da API](api.md). O endpoint de
+webhook só entrará na especificação quando puder validar uma assinatura real e
+persistir o evento de forma durável.
+
+## Cenários de teste
+
+Cobertos na Fase 2:
+
+- Criação e consulta de pedido com preço definido no servidor.
+- Repetição idempotente de pedido e checkout.
+- Falha do provedor e resposta de sessão inválida.
+- Duas chaves concorrentes disputando o mesmo checkout.
+- Tentativa do cliente de informar o próprio valor.
+
+Planejados para as Fases 3 e 4:
+
+- Timeout depois de o provedor aceitar a operação e antes da persistência local.
 - Assinatura de webhook inválida.
 - Mesmo evento entregue duas vezes.
 - Eventos relacionados entregues fora de ordem.
@@ -334,7 +374,6 @@ exigem uma assinatura válida gerada pelo provedor ou por sua ferramenta local.
 - Queda do consumer antes e depois do commit no PostgreSQL.
 - Redelivery da mesma mensagem.
 - Mensagem que excede o limite de tentativas e chega à DLQ.
-- Tentativa de alterar valor ou moeda após iniciar o checkout.
 - Consulta do pedido antes e depois da entrega do webhook.
 
 Os detalhes de criação da sessão, eventos consumidos e testes locais estão no

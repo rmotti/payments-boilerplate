@@ -117,10 +117,10 @@ Eventos necessários:
 | `checkout.session.async_payment_failed` | Mover uma tentativa válida para `failed` |
 | `checkout.session.expired` | Cancelar uma tentativa ainda não concluída, sem regredir um estado final |
 
-O ID do evento da Stripe é a chave externa de deduplicação da inbox. Um evento
-verificado é salvo junto com a outbox em uma única transação; o processamento de
-negócio ocorre pelo RabbitMQ. Eventos repetidos ou fora de ordem não podem
-repetir efeitos nem regredir estados finais.
+O ID do evento da Stripe será a chave externa de deduplicação da inbox. Um
+evento verificado será salvo junto com a outbox em uma única transação; o
+processamento de negócio ocorrerá pelo RabbitMQ. Eventos repetidos ou fora de
+ordem não poderão repetir efeitos nem regredir estados finais.
 
 Mesmo que cartão costume ter confirmação imediata, o código não deve presumir
 que todo meio de pagamento conclui durante a requisição. Esse limite prepara o
@@ -128,9 +128,17 @@ fluxo para Pix e outros métodos assíncronos.
 
 ## Testes de aceitação
 
+### Validados na Fase 2
+
 - Criar um pedido e abrir sua Checkout Session hospedada.
-- Concluir um cartão de teste e observar o pedido chegar a `paid`.
+- Concluir um cartão de teste, observar `paid` na Stripe e manter o pedido local
+  em `pending`.
 - Repetir a criação com a mesma idempotency key sem criar outra sessão.
+
+### Planejados para as Fases 3 e 4
+
+- Concluir um cartão de teste e observar o pedido local chegar a `paid` depois
+  do webhook.
 - Rejeitar assinatura ausente ou inválida.
 - Receber duas vezes o mesmo evento sem duplicar efeitos.
 - Receber eventos fora de ordem sem regredir um estado final.
@@ -140,7 +148,8 @@ fluxo para Pix e outros métodos assíncronos.
 - Depois do fluxo de cartão estar estável, testar Pix de `processing` até o
   estado final e o caminho de expiração/falha.
 
-Para desenvolvimento local, a Stripe CLI poderá encaminhar eventos ao endpoint:
+Quando o endpoint existir, a Stripe CLI poderá encaminhar eventos ao ambiente
+local:
 
 ```shell
 stripe listen --forward-to localhost:8080/v1/webhooks/stripe
