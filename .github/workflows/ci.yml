@@ -16,6 +16,20 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_DB: payments
+          POSTGRES_USER: payments
+          POSTGRES_PASSWORD: payments_local
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U payments -d payments"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -44,6 +58,8 @@ jobs:
 
       - name: Test with race detector
         run: go test -race -coverprofile=coverage.out ./...
+        env:
+          TEST_DATABASE_URL: postgres://payments:payments_local@localhost:5432/payments?sslmode=disable
 
       - name: Check vulnerabilities
         run: go tool govulncheck ./...

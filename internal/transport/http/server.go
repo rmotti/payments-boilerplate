@@ -19,7 +19,13 @@ import (
 	"go.uber.org/zap"
 )
 
-const correlationHeader = "X-Correlation-ID"
+const (
+	correlationHeader = "X-Correlation-ID"
+
+	// maxBodyBytes bounds request bodies. The public API only receives small
+	// JSON documents; anything larger is rejected before it is decoded.
+	maxBodyBytes = 64 << 10
+)
 
 type correlationKey struct{}
 
@@ -39,8 +45,14 @@ type Server struct {
 // New creates an HTTP server with readiness, correlation and telemetry.
 func New(cfg Config, logger *zap.Logger, apiHandler openapi.StrictServerInterface) *Server {
 	mux := http.NewServeMux()
-	strictHandler := openapi.NewStrictHandler(apiHandler, nil)
-	openapi.HandlerFromMux(strictHandler, mux)
+	strictHandler := openapi.NewStrictHandlerWithOptions(apiHandler, nil, openapi.StrictHTTPServerOptions{
+		RequestErrorHandlerFunc:  requestErrorHandler,
+		ResponseErrorHandlerFunc: responseErrorHandler(logger),
+	})
+	openapi.HandlerWithOptions(strictHandler, openapi.StdHTTPServerOptions{
+		BaseRouter:       mux,
+		ErrorHandlerFunc: requestErrorHandler,
+	})
 
 	if cfg.DocsEnabled {
 		mux.HandleFunc("GET /openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
@@ -57,7 +69,7 @@ func New(cfg Config, logger *zap.Logger, apiHandler openapi.StrictServerInterfac
 		})
 	}
 
-	base := accessLogMiddleware(logger, recoveryMiddleware(logger, mux))
+	base := accessLogMiddleware(logger, recoveryMiddleware(logger, bodyLimitMiddleware(mux)))
 	instrumented := otelhttp.NewHandler(base, "http.server")
 	handler := correlationMiddleware(instrumented)
 
@@ -134,11 +146,51 @@ func recoveryMiddleware(logger *zap.Logger, next http.Handler) http.Handler {
 					zap.Any("panic", recovered),
 					zap.String("correlation_id", correlationIDFromContext(r.Context())),
 				)
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				writeError(w, r, http.StatusInternalServerError, codeInternalError, "internal error")
 			}
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// bodyLimitMiddleware caps the bytes a handler can read from the request body.
+func bodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requestErrorHandler answers failures that happen before the operation runs:
+// a missing required header, a malformed parameter or an undecodable body.
+func requestErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeError(w, r, http.StatusRequestEntityTooLarge, codeInvalidRequest, "request body too large")
+		return
+	}
+	writeError(w, r, http.StatusBadRequest, codeInvalidRequest, err.Error())
+}
+
+// responseErrorHandler answers errors returned by the operation itself. Those
+// are unexpected by construction, so the cause is logged with the correlation
+// id and the client receives only a generic body.
+func responseErrorHandler(logger *zap.Logger) func(w http.ResponseWriter, r *http.Request, err error) {
+	return func(w http.ResponseWriter, r *http.Request, err error) {
+		if errors.Is(err, ErrNotServed) {
+			writeError(w, r, http.StatusNotImplemented, codeNotImplemented, ErrNotServed.Error())
+			return
+		}
+		logging.WithTrace(r.Context(), logger).Error("http handler failed",
+			zap.Error(err),
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.String("correlation_id", correlationIDFromContext(r.Context())),
+		)
+		writeError(w, r, http.StatusInternalServerError, codeInternalError, "internal error")
+	}
 }
 
 func correlationIDFromContext(ctx context.Context) string {

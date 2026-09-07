@@ -19,7 +19,7 @@ tests/         testes que atravessam mais de um pacote
 ```text
 internal/domain/        entidades, valores e invariantes puras
 internal/application/   casos de uso e portas exigidas por eles
-internal/adapters/      PostgreSQL, RabbitMQ e provedores externos
+internal/adapters/      PostgreSQL, RabbitMQ, catalogo e provedores externos
 internal/transport/     entradas HTTP e traducao de protocolos
 internal/platform/      configuracao, banco, logs, lifecycle e telemetria
 ```
@@ -35,6 +35,10 @@ manualmente:
 internal/transport/http/openapi/    tipos e strict server do oapi-codegen
 internal/adapters/postgres/queries/ queries geradas pelo sqlc
 ```
+
+O catalogo de produtos vive em `internal/adapters/catalog`. Na versao 0.1 ele e
+fixo e em memoria, mas ja fica atras da porta `Catalog` do caso de uso, entao um
+catalogo persistido ou remoto entra como outro adapter sem tocar o dominio.
 
 Diretorios `pkg/` e `utils/` nao devem ser criados sem um consumidor externo ou
 uma responsabilidade claramente definida.

@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/oapi-codegen/runtime"
 )
 
 // Defines values for HealthResponseChecks.
@@ -56,6 +57,51 @@ func (e HealthResponseStatus) Valid() bool {
 	}
 }
 
+// Defines values for OrderStatus.
+const (
+	Cancelled OrderStatus = "cancelled"
+	Expired   OrderStatus = "expired"
+	Paid      OrderStatus = "paid"
+	Pending   OrderStatus = "pending"
+)
+
+// Valid indicates whether the value is a known member of the OrderStatus enum.
+func (e OrderStatus) Valid() bool {
+	switch e {
+	case Cancelled:
+		return true
+	case Expired:
+		return true
+	case Paid:
+		return true
+	case Pending:
+		return true
+	default:
+		return false
+	}
+}
+
+// CreateOrderRequest defines model for CreateOrderRequest.
+type CreateOrderRequest struct {
+	// ProductId Identificador de um produto conhecido pelo servidor.
+	ProductId string `json:"productId"`
+
+	// Quantity Quantidade de unidades do produto.
+	Quantity int `json:"quantity"`
+}
+
+// Error defines model for Error.
+type Error struct {
+	// Code Codigo estavel do erro, adequado para tratamento programatico.
+	Code string `json:"code"`
+
+	// CorrelationId Identificador de correlacao da requisicao, igual ao header X-Correlation-ID.
+	CorrelationId string `json:"correlationId"`
+
+	// Message Descricao legivel do erro, sem dados sensiveis.
+	Message string `json:"message"`
+}
+
 // HealthResponse defines model for HealthResponse.
 type HealthResponse struct {
 	Checks  map[string]HealthResponseChecks `json:"checks"`
@@ -70,11 +116,46 @@ type HealthResponseChecks string
 // HealthResponseStatus defines model for HealthResponse.Status.
 type HealthResponseStatus string
 
+// Order defines model for Order.
+type Order struct {
+	// Amount Valor total na menor unidade da moeda, calculado no servidor.
+	Amount int64 `json:"amount"`
+
+	// Currency Codigo ISO 4217 da moeda.
+	Currency string `json:"currency"`
+
+	// Id Identificador publico opaco e nao sequencial.
+	Id string `json:"id"`
+
+	// Status Estado comercial do pedido.
+	Status OrderStatus `json:"status"`
+}
+
+// OrderStatus Estado comercial do pedido.
+type OrderStatus string
+
+// IdempotencyKey defines model for IdempotencyKey.
+type IdempotencyKey = string
+
+// CreateOrderParams defines parameters for CreateOrder.
+type CreateOrderParams struct {
+	// IdempotencyKey Chave opaca escolhida pelo cliente que identifica esta operacao. Deve
+	// ter entre 1 e 255 caracteres. Reenviar a mesma chave nao cria um
+	// segundo pedido.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// CreateOrderJSONRequestBody defines body for CreateOrder for application/json ContentType.
+type CreateOrderJSONRequestBody = CreateOrderRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// GetHealth Retorna a disponibilidade do processo e de suas dependencias.
 	// (GET /health)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// CreateOrder Cria um pedido a partir de um produto conhecido pelo servidor.
+	// (POST /v1/orders)
+	CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -91,6 +172,51 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealth(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateOrder operation middleware
+func (siw *ServerInterfaceWrapper) CreateOrder(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreateOrderParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = IdempotencyKey
+
+	} else {
+		err := fmt.Errorf("Header parameter Idempotency-Key is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "Idempotency-Key", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateOrder(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -221,6 +347,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	}
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/health", wrapper.GetHealth)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/orders", wrapper.CreateOrder)
 
 	return m
 }
@@ -260,11 +387,107 @@ func (response GetHealth503JSONResponse) VisitGetHealthResponse(w http.ResponseW
 	return err
 }
 
+type CreateOrderRequestObject struct {
+	Params CreateOrderParams
+	Body   *CreateOrderJSONRequestBody
+}
+
+type CreateOrderResponseObject interface {
+	VisitCreateOrderResponse(w http.ResponseWriter) error
+}
+
+type CreateOrder201JSONResponse Order
+
+func (response CreateOrder201JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateOrder400JSONResponse Error
+
+func (response CreateOrder400JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateOrder404JSONResponse Error
+
+func (response CreateOrder404JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateOrder409JSONResponse Error
+
+func (response CreateOrder409JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateOrder413JSONResponse Error
+
+func (response CreateOrder413JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateOrder500JSONResponse Error
+
+func (response CreateOrder500JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetHealth Retorna a disponibilidade do processo e de suas dependencias.
 	// (GET /health)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
+	// CreateOrder Cria um pedido a partir de um produto conhecido pelo servidor.
+	// (POST /v1/orders)
+	CreateOrder(ctx context.Context, request CreateOrderRequestObject) (CreateOrderResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -330,19 +553,72 @@ func (sh *strictHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// CreateOrder operation middleware
+func (sh *strictHandler) CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams) {
+	var request CreateOrderRequestObject
+
+	request.Params = params
+
+	var body CreateOrderJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateOrder(ctx, request.(CreateOrderRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateOrder")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateOrderResponseObject); ok {
+		if err := validResponse.VisitCreateOrderResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
 // Stored as a slice of fixed-width chunks rather than one concatenated
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

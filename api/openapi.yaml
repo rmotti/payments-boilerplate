@@ -24,7 +24,118 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+  /v1/orders:
+    post:
+      operationId: createOrder
+      summary: Cria um pedido a partir de um produto conhecido pelo servidor.
+      description: |
+        O valor e a moeda do pedido sao calculados no servidor a partir do
+        catalogo. O cliente informa apenas o produto e a quantidade; nenhum
+        valor enviado na requisicao e aceito como preco.
+      tags: [Orders]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+            examples:
+              demo:
+                summary: Um produto de demonstracao.
+                value:
+                  productId: product_demo
+                  quantity: 1
+      responses:
+        "201":
+          description: Pedido criado com valor calculado no servidor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+              examples:
+                pending:
+                  value:
+                    id: ord_3f2504e04f8911d39a0c0305e82c3301
+                    status: pending
+                    amount: 10000
+                    currency: BRL
+        "400":
+          description: Corpo, header ou campos da requisicao invalidos.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidQuantity:
+                  value:
+                    code: invalid_request
+                    message: quantity must be between 1 and 1000
+                    correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
+        "404":
+          description: O produto informado nao existe no catalogo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unknownProduct:
+                  value:
+                    code: product_not_found
+                    message: product not found
+                    correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
+        "409":
+          description: A Idempotency-Key ja foi usada por outro pedido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                reusedKey:
+                  value:
+                    code: idempotency_key_conflict
+                    message: idempotency key already used
+                    correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
+        "413":
+          description: O corpo da requisicao excede o limite aceito pela API.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                tooLarge:
+                  value:
+                    code: invalid_request
+                    message: request body too large
+                    correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
+        "500":
+          description: Falha inesperada ao criar o pedido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                internal:
+                  value:
+                    code: internal_error
+                    message: internal error
+                    correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
 components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Chave opaca escolhida pelo cliente que identifica esta operacao. Deve
+        ter entre 1 e 255 caracteres. Reenviar a mesma chave nao cria um
+        segundo pedido.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+      example: 8c1f5f2e-9a3b-4c2d-8e7f-1a2b3c4d5e6f
   schemas:
     HealthResponse:
       type: object
@@ -42,4 +153,50 @@ components:
           additionalProperties:
             type: string
             enum: [up, down]
-
+    CreateOrderRequest:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+          description: Identificador de um produto conhecido pelo servidor.
+          minLength: 1
+          maxLength: 128
+        quantity:
+          type: integer
+          description: Quantidade de unidades do produto.
+          minimum: 1
+          maximum: 1000
+    Order:
+      type: object
+      required: [id, status, amount, currency]
+      properties:
+        id:
+          type: string
+          description: Identificador publico opaco e nao sequencial.
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        amount:
+          type: integer
+          format: int64
+          description: Valor total na menor unidade da moeda, calculado no servidor.
+        currency:
+          type: string
+          description: Codigo ISO 4217 da moeda.
+    OrderStatus:
+      type: string
+      description: Estado comercial do pedido.
+      enum: [pending, paid, cancelled, expired]
+    Error:
+      type: object
+      required: [code, message, correlationId]
+      properties:
+        code:
+          type: string
+          description: Codigo estavel do erro, adequado para tratamento programatico.
+        message:
+          type: string
+          description: Descricao legivel do erro, sem dados sensiveis.
+        correlationId:
+          type: string
+          description: Identificador de correlacao da requisicao, igual ao header X-Correlation-ID.
