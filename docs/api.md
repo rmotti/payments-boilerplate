@@ -31,6 +31,30 @@ projeto estiver na série `v0.x`, ele permanece experimental e pode sofrer
 mudanças incompatíveis entre versões minor. Consulte a
 [política de versionamento](versioning.md).
 
+## Modelo de acesso
+
+A versão `0.1` assume um integrador por implantação. O backend do integrador,
+nunca o navegador do consumidor, chama as rotas de negócio. A política aprovada
+está registrada no [ADR 0010](decisions/0010-route-access-model.md):
+
+| Operação | Acesso planejado |
+| --- | --- |
+| `POST /v1/orders` | Header `X-API-Key` obrigatório |
+| `POST /v1/orders/{orderId}/checkout` | Header `X-API-Key` obrigatório |
+| `GET /v1/orders/{orderId}` | Header `X-API-Key` obrigatório |
+| `POST /v1/webhooks/stripe` | Sem API key; assinatura Stripe obrigatória |
+| `GET /health` | Público, com resposta mínima |
+| `GET /docs` e `GET /openapi.yaml` | Desenvolvimento; desabilitados por padrão em produção |
+
+O modelo foi decidido, mas ainda não é aplicado pelo runtime. Até a conclusão
+do próximo item do roadmap, as rotas existentes continuam sem autenticação de
+integração. O OpenAPI receberá o `securityScheme` junto da implementação para
+que o contrato nunca anuncie uma proteção inexistente.
+
+Uma chave válida dará acesso aos pedidos da própria instalação. Multi-tenancy,
+login de consumidores e autorização entre organizações permanecem fora do
+contrato da versão `0.1`.
+
 ## Endpoints
 
 ### `POST /v1/orders`
@@ -139,6 +163,7 @@ Expõe o Swagger UI gerado a partir do contrato OpenAPI versionado.
 ## Fora do contrato da versão 0.1
 
 - Clientes e autenticação de consumidores.
+- Multi-tenancy e compartilhamento da mesma instalação entre integradores.
 - Catálogo público ou gerenciamento de produtos.
 - Reembolsos.
 - Assinaturas.

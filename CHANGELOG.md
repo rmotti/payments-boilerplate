@@ -21,5 +21,8 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `POST /v1/orders` com valor e moeda calculados no servidor a partir de um
   catálogo fixo, header `Idempotency-Key` obrigatório e erros JSON com código
   estável e identificador de correlação.
+- Modelo de acesso self-hosted e single-integrator: API key nas rotas de
+  negócio, assinatura Stripe nos webhooks, health público e documentação de
+  API restrita ao desenvolvimento.
 
 [Unreleased]: https://github.com/rmotti/payments-boilerplate/commits/main
