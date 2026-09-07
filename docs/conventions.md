@@ -63,10 +63,10 @@ pelos casos de uso.
   por meio do `sqlc`.
 - GORM coordena o CRUD e as transações curtas de pedido e pagamento, enquanto
   constraints e índices do schema garantem idempotência e concorrência. A
-  gravação de inbox e outbox e a deduplicação de eventos já usam `sqlc`, e os
-  locks, o polling do relay e as transições condicionais do consumer seguirão o
-  mesmo caminho: SQL explícito sempre que a forma da query fizer parte da
-  garantia.
+  gravação de inbox e outbox, a deduplicação de eventos, o lease do relay e as
+  transições condicionais do consumer usam `sqlc`: SQL explícito sempre que a
+  forma da query fizer parte da garantia. A fronteira entre os dois estilos é
+  por query, e não por tabela.
 - Models do GORM não são entidades do domínio e hooks não contêm regras de
   negócio.
 - O schema do banco é interno e não deve ser consumido diretamente por

@@ -58,9 +58,9 @@ múltiplos provedores.
 - [x] Persistir inbox e outbox na mesma transação.
 - [x] Deduplicar entregas.
 - [x] Publicar mensagens persistentes com publisher confirms.
-- [ ] Consumir com ack manual e concorrência limitada.
-- [ ] Implementar retry com backoff e dead-letter queue.
-- [ ] Impedir regressões inválidas de estado.
+- [x] Consumir com ack manual e concorrência limitada.
+- [x] Implementar retry com backoff e dead-letter queue.
+- [x] Impedir regressões inválidas de estado.
 - [ ] Permitir inspeção e reprocessamento seguro.
 - [ ] Habilitar Pix e validar a transição assíncrona até o estado final.
 

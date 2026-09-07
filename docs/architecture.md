@@ -4,8 +4,8 @@ Este documento descreve as fronteiras e invariantes da API em Go e distingue o
 runtime atual da arquitetura-alvo da versão `0.1.0`. A API usa PostgreSQL como
 fonte de verdade, abre Stripe Checkout e já recebe webhooks assinados,
 gravando o evento e sua mensagem de outbox na mesma transação. O relay que
-publica essas mensagens já roda dentro do processo `worker`. O consumo
-assíncrono ainda pertence à Fase 3.
+publica essas mensagens e o consumer que as aplica rodam dentro do processo
+`worker`. A inspeção operacional e o Pix ainda pertencem à Fase 3.
 
 ## Contexto
 
@@ -45,9 +45,9 @@ exercita o contrato, mas não faz parte do fluxo de produção de quem adotar o
 projeto.
 
 A API persiste o webhook e uma mensagem de outbox na mesma transação. O relay
-publica a mensagem no RabbitMQ, e o consumer aplicará seus efeitos de forma
-idempotente; essa última etapa ainda pertence à Fase 3. API, relay e consumer
-pertencem ao mesmo código-base.
+publica a mensagem no RabbitMQ, e o consumer aplica seus efeitos de forma
+idempotente, em uma única transação que bloqueia o agregado inteiro. API, relay
+e consumer pertencem ao mesmo código-base.
 
 ## Responsabilidades
 
@@ -83,16 +83,25 @@ caminho de extração para um binário próprio.
 - Abandonar apenas mensagens cujo erro seja classificado como permanente, e
   reportar as que insistirem em falhar sem interromper as tentativas.
 
-### Payments worker — consumo na Fase 3
+### Payments consumer
 
-O binário hospeda o relay do outbox e serve health. O consumo de mensagens ainda
-não existe; sua responsabilidade-alvo é:
+Executa dentro do processo `worker`, ao lado do relay, com conexões AMQP
+próprias. O [ADR 0013](decisions/0013-consumer-transactions-transitions-and-retry.md)
+registra a transação, a matriz de transições e a política de falha.
 
-- Consumir mensagens com confirmação manual.
-- Aplicar transições de estado válidas e idempotentes.
+- Consumir com ack manual, prefetch explícito e concorrência limitada.
+- Bloquear o agregado inteiro — evento, tentativa, pagamento e pedido — em
+  ordem fixa, para que eventos diferentes do mesmo pagamento não se atropelem.
+- Ler o estado bloqueado, consultar a matriz de transições e só então escrever;
+  uma transição aprovada que não altere exatamente uma linha é invariante
+  violada, não no-op.
 - Confirmar a mensagem somente após o commit no PostgreSQL.
-- Aplicar retry com backoff para falhas transitórias.
-- Encaminhar falhas definitivas para uma dead-letter queue.
+- Republicar falhas transitórias em faixas de retry com TTL crescente, e falhas
+  definitivas na dead-letter exchange, sempre com publisher confirm antes do
+  ack.
+- Nunca regredir um estado final por causa de um evento fora de ordem.
+- Validar provider, valor, moeda e a relação dos identificadores antes de
+  aplicar qualquer transição.
 
 ### RabbitMQ — uso financeiro
 
@@ -147,7 +156,8 @@ O modelo completo, alternativas e limitações estão no
 
 `Order`, `Payment`, `PaymentAttempt`, `WebhookEvent` e `OutboxEvent` possuem
 entidades Go e persistência. As transições de estado disparadas pelos eventos
-recebidos pertencem ao consumidor da Fase 3.
+recebidos são aplicadas pelo consumer, contra a matriz registrada no
+[ADR 0013](decisions/0013-consumer-transactions-transitions-and-retry.md).
 
 ### Customer — fora da versão 0.1
 
@@ -212,10 +222,7 @@ primeira versão.
 
 ## Invariantes
 
-As invariantes de pedido, preço, checkout, idempotência, recepção de webhook,
-gravação atômica da inbox com a outbox e
-publicação com publisher confirm já são executáveis. As que mencionam consumo
-descrevem o restante da Fase 3.
+As invariantes abaixo são executáveis, incluindo as de consumo.
 
 - Dinheiro é representado por inteiro na menor unidade e código de moeda.
 - Valor e moeda tornam-se imutáveis quando o checkout é iniciado.
@@ -229,7 +236,11 @@ descrevem o restante da Fase 3.
 - O identificador do evento impede o processamento repetido.
 - Uma resposta HTTP de sucesso ao webhook só é enviada depois que o evento foi
   aceito de forma durável; o trabalho demorado ocorre fora da requisição.
-- Transições inválidas ou regressivas são ignoradas ou encaminhadas para análise.
+- Transições inválidas ou regressivas são ignoradas ou encaminhadas para
+  análise: um evento negativo depois de um estado final positivo é no-op, e um
+  evento positivo sobre um pagamento ou tentativa final contraditória vai para
+  a dead-letter. Estados de reembolso nunca são regredidos por eventos tardios
+  de checkout.
 - Chamadas do cliente e URLs de retorno não determinam o estado final do
   pagamento.
 - Logs usam identificadores e metadados mínimos, nunca secrets ou instrumentos
@@ -281,11 +292,15 @@ tests/
 ```
 
 Os repositories de pedido e pagamento usam GORM com transações curtas e apoiam
-as garantias de concorrência nas constraints do schema. A inbox e a outbox usam
-`sqlc` sobre `database/sql`, porque a forma dessas queries faz parte da
-garantia; as duas tabelas são novas, então nenhuma transação mistura os dois
-estilos. Locks, polling e transições condicionais do relay e do consumer também
-usarão `sqlc`. Goose é a única autoridade de migrations e o projeto não usa
+as garantias de concorrência nas constraints do schema. A inbox, a outbox, o
+lease do relay e as transições do consumer usam `sqlc` sobre `database/sql`,
+porque a forma dessas queries faz parte da garantia. Nenhuma transação mistura
+os dois estilos: o caminho de escrita do consumer é inteiramente `sqlc`, o que
+mantém a regra do ADR 0007 sem precisar de uma ponte sobre o mesmo `sql.Tx`.
+
+A fronteira entre os dois estilos é por query, e não por tabela: `payments`,
+`payment_attempts` e `orders` são escritas por GORM na API e por `sqlc` no
+worker. Goose é a única autoridade de migrations e o projeto não usa
 `AutoMigrate`.
 
 ## Implantação inicial
@@ -373,7 +388,11 @@ declarada junto, antes de existir consumer, porque os argumentos de uma fila sã
 imutáveis no RabbitMQ: adicioná-los depois exigiria apagar e recriar uma fila que
 já carrega mensagens financeiras.
 
-O consumer usará ack manual e um prefetch baixo e configurável.
+O consumer usa ack manual e prefetch explícito. As faixas de retry são objetos
+novos, declarados ao lado da topologia existente: uma exchange fanout e uma fila
+quorum por faixa, com TTL próprio e dead-lettering de volta à `payments.events`.
+Uma fila por faixa evita que uma espera longa na cabeça bloqueie as curtas, e o
+fanout preserva a routing key original no caminho de volta.
 
 ## Superfície HTTP
 
@@ -406,16 +425,25 @@ Cobertos:
 - Evento de tipo não tratado, registrado sem produzir mensagem.
 - Falha de gravação respondida de forma que o provedor reentregue.
 
-Planejados para as Fases 3 e 4:
+- Cada célula da matriz de transições, incluindo eventos fora de ordem.
+- Sessão concluída sem pagamento liquidado, que produz `processing`.
+- Versão de API incompatível, metadata ausente e valor ou moeda divergentes.
+- Dois eventos diferentes do mesmo pagamento processados ao mesmo tempo.
+- Redelivery da mesma mensagem, sem repetir efeitos.
+- Falha transitória que passa por uma faixa de retry e volta.
+- Falha definitiva que chega à DLQ.
+- Falha de processamento ou republicação que fecha o canal e reentrega a
+  mensagem sem ack depois do backoff.
+- Mensagem malformada republicada explicitamente e confirmada na DLQ.
+- Budget esgotado fechando a inbox e enviando a mensagem à DLQ sem divergência
+  entre os dois estados.
+
+Planejados para a Fase 4:
 
 - Timeout depois de o provedor aceitar a operação e antes da persistência local.
-- Eventos relacionados entregues fora de ordem.
-- Falha no processamento depois de o evento ser persistido.
 - RabbitMQ indisponível depois do commit da inbox e do outbox.
 - Queda do relay depois do publisher confirm e antes de atualizar o outbox.
 - Queda do consumer antes e depois do commit no PostgreSQL.
-- Redelivery da mesma mensagem.
-- Mensagem que excede o limite de tentativas e chega à DLQ.
 - Consulta do pedido antes e depois da entrega do webhook.
 
 Os detalhes de criação da sessão, eventos consumidos e testes locais estão no

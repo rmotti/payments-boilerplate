@@ -116,3 +116,34 @@ func TestCurrencyValid(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkPaid(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		status Status
+		want   Status
+		moved  bool
+	}{
+		{name: "pending order is paid", status: StatusPending, want: StatusPaid, moved: true},
+		{name: "paid order does not move again", status: StatusPaid, want: StatusPaid},
+		{name: "cancelled order is not revived", status: StatusCancelled, want: StatusCancelled},
+		{name: "expired order is not revived", status: StatusExpired, want: StatusExpired},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, moved := Order{ID: "ord_1", Status: test.status}.MarkPaid(now)
+			if got.Status != test.want || moved != test.moved {
+				t.Errorf("MarkPaid() = %q, %t, want %q, %t", got.Status, moved, test.want, test.moved)
+			}
+			if moved && !got.UpdatedAt.Equal(now) {
+				t.Errorf("MarkPaid() UpdatedAt = %v, want %v", got.UpdatedAt, now)
+			}
+		})
+	}
+}

@@ -66,8 +66,10 @@ Para cada `PaymentAttempt`, o adapter cria uma nova Checkout Session. A chamada:
 A reserva local permanece ativa se a chamada ao provedor falhar ou expirar por
 timeout. O cliente deve retomar a operação com a mesma `Idempotency-Key`;
 enquanto a tentativa estiver ativa, uma chave diferente é bloqueada para evitar
-cobranças concorrentes. As transições de falha e expiração, assim como a
-liberação segura de uma nova tentativa, serão implementadas na Fase 3.
+cobranças concorrentes. As transições de falha e expiração são aplicadas pelo
+consumer: uma sessão expirada move a tentativa para `expired` e deixa o
+pagamento em `pending`, o que libera o índice parcial para uma nova tentativa
+dentro do mesmo pagamento.
 
 O SDK oficial está fixado na série major `v86`. A aplicação depende de uma
 interface própria e pequena; somente o adapter importa os tipos da Stripe. A
@@ -87,10 +89,9 @@ seguinte.
 4. Abra `checkoutUrl` e use o cartão de teste `4242 4242 4242 4242`, uma data
    futura e qualquer CVC.
 
-Nesta fase o pagamento aparece concluído na Stripe e o webhook já registra o
-evento de forma durável, mas o pedido local continua `pending`: a publicação no
-RabbitMQ e o worker que aplica a transição pertencem ao restante da Fase 3. A
-URL de sucesso nunca é tratada como prova de pagamento.
+O pagamento aparece concluído na Stripe, o webhook registra o evento de forma
+durável, o relay o publica no RabbitMQ e o consumer aplica a transição: o pedido
+chega a `paid`. A URL de sucesso nunca é tratada como prova de pagamento.
 
 ### Validação executada
 
@@ -100,8 +101,9 @@ como `complete`, com `payment_status=paid`, `amount_total=10000`, moeda `brl` e
 `livemode=false`. Repetir a requisição com a mesma chave devolveu a mesma sessão
 e o PostgreSQL permaneceu com um único `Payment` e um único `PaymentAttempt`.
 
-Como esperado antes da Fase 3, pedido, pagamento e tentativa continuaram
-localmente em `pending`; nenhuma URL de retorno foi usada para alterar estado.
+Naquele momento, antes do consumer existir, pedido, pagamento e tentativa
+continuaram localmente em `pending`. Com a terceira entrega da Fase 3 o mesmo
+evento passa a levar o pedido a `paid`; nenhuma URL de retorno altera estado.
 
 ## Webhooks e transições
 
@@ -113,9 +115,10 @@ capturada.
 
 A verificação ignora deliberadamente divergências de versão de API. Este
 endpoint apenas registra o evento e nada interpreta o grafo de objetos do
-provedor ainda; uma diferença de versão não pode impedir que um evento
-autêntico seja gravado. A compatibilidade será verificada pelo consumidor,
-quando ele realmente ler a sessão.
+provedor; uma diferença de versão não pode impedir que um evento autêntico seja
+gravado. A compatibilidade é verificada pelo consumer, quando ele realmente lê a
+sessão: uma versão que o adapter não conhece interrompe o processamento e a
+mensagem vai para a dead-letter, em vez de ser interpretada às cegas.
 
 Eventos necessários:
 
@@ -126,10 +129,16 @@ Eventos necessários:
 | `checkout.session.async_payment_failed` | Mover uma tentativa válida para `failed` |
 | `checkout.session.expired` | Cancelar uma tentativa ainda não concluída, sem regredir um estado final |
 
+Um sucesso que contradiga uma tentativa já `failed`, `expired` ou `cancelled`
+vai para a DLQ. Em particular, a sessão expirada não pode concluir o pagamento
+depois que uma nova tentativa foi liberada. Eventos tardios também não retiram
+um pagamento de `partially_refunded` ou `refunded`; eventos não positivos de
+uma tentativa antiga encerrada são no-op e não interferem na tentativa nova.
+
 O ID do evento da Stripe é a chave externa de deduplicação da inbox. Um evento
-verificado é salvo junto com a outbox em uma única transação; o processamento de
-negócio ocorrerá pelo RabbitMQ. Eventos repetidos ou fora de ordem não poderão
-repetir efeitos nem regredir estados finais.
+verificado é salvo junto com a outbox em uma única transação e o processamento
+de negócio ocorre pelo RabbitMQ. Eventos repetidos ou fora de ordem não repetem
+efeitos nem regridem estados finais.
 
 Um evento cujo tipo não esteja na tabela acima é registrado como `skipped` e
 não gera mensagem. Isso mantém a trilha de auditoria e avisa quando a Stripe
@@ -144,19 +153,18 @@ fluxo para Pix e outros métodos assíncronos.
 ### Validados
 
 - Criar um pedido e abrir sua Checkout Session hospedada.
-- Concluir um cartão de teste, observar `paid` na Stripe e manter o pedido local
-  em `pending`.
 - Repetir a criação com a mesma idempotency key sem criar outra sessão.
 - Rejeitar assinatura ausente, forjada ou fora da janela de tolerância.
 - Aceitar um evento assinado e gravar inbox e outbox na mesma transação.
 - Receber duas vezes o mesmo evento sem criar uma segunda mensagem.
 - Registrar um evento de tipo não tratado sem enfileirá-lo.
-
-### Planejados para as Fases 3 e 4
-
 - Concluir um cartão de teste e observar o pedido local chegar a `paid` depois
   do webhook.
 - Receber eventos fora de ordem sem regredir um estado final.
+- Aplicar o mesmo evento duas vezes sem repetir efeitos.
+
+### Planejados para a Fase 4
+
 - Aceitar o webhook de forma durável enquanto RabbitMQ estiver indisponível e
   publicá-lo quando o broker voltar.
 - Encerrar API, relay ou worker em pontos críticos sem perder o evento.

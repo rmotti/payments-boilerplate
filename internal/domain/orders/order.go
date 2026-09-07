@@ -161,3 +161,27 @@ func multiply(unitAmount, quantity int64) (int64, error) {
 	}
 	return unitAmount * quantity, nil
 }
+
+// Settled reports whether the order reached a state no payment event may
+// leave. A paid order is the end of this flow; cancelled and expired orders
+// are reachable only by paths that do not exist yet, and are treated as final
+// here so a future one cannot be regressed by a late event.
+func (o Order) Settled() bool {
+	return o.Status != StatusPending
+}
+
+// MarkPaid moves a pending order to paid.
+//
+// It reports whether the order actually moves, so the caller can tell a real
+// transition from an order that was already paid. The distinction matters
+// because the consumer treats "no row updated" during an applied transition as
+// a violated invariant, and must not attempt the update at all when the order
+// is already where the event wants it.
+func (o Order) MarkPaid(now time.Time) (Order, bool) {
+	if o.Status != StatusPending {
+		return o, false
+	}
+	o.Status = StatusPaid
+	o.UpdatedAt = now.UTC()
+	return o, true
+}

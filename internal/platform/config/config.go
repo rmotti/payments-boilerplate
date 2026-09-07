@@ -49,6 +49,15 @@ type Config struct {
 	// reported. It never stops the retries: only a permanent failure does.
 	OutboxAlertAfterAttempts int `env:"OUTBOX_ALERT_AFTER_ATTEMPTS" envDefault:"10"`
 
+	// Consumer tuning. Prefetch bounds the messages in flight; concurrency
+	// bounds how many are applied at once. The retry delays are the ladder a
+	// transient failure walks, and the last one repeats until the attempt
+	// budget is spent.
+	ConsumerConcurrency int             `env:"CONSUMER_CONCURRENCY" envDefault:"4"`
+	ConsumerPrefetch    int             `env:"CONSUMER_PREFETCH" envDefault:"4"`
+	ConsumerMaxAttempts int             `env:"CONSUMER_MAX_ATTEMPTS" envDefault:"10"`
+	ConsumerRetryDelays []time.Duration `env:"CONSUMER_RETRY_DELAYS" envDefault:"5s,30s,2m,10m"`
+
 	IntegrationAPIKeys []string `env:"INTEGRATION_API_KEYS"`
 
 	StripeSecretKey     string `env:"STRIPE_SECRET_KEY"`
@@ -132,6 +141,45 @@ func Load(serviceName, defaultHTTPAddress string, requireRabbitMQ bool) (Config,
 		return Config{}, fmt.Errorf(
 			"OUTBOX_LEASE_DURATION must be at least OUTBOX_BATCH_SIZE x %s + %s settlement reserve (%s)",
 			PublishAttemptBudget, outboxapp.SettlementReserve, minimumLease)
+	}
+	if cfg.ConsumerConcurrency < 1 {
+		return Config{}, errors.New("CONSUMER_CONCURRENCY must be positive")
+	}
+	// A prefetch below the concurrency starves workers: the broker refuses to
+	// deliver more unacknowledged messages than the prefetch allows, so the
+	// extra goroutines would sit idle forever.
+	if cfg.ConsumerPrefetch < cfg.ConsumerConcurrency {
+		return Config{}, errors.New("CONSUMER_PREFETCH must be at least CONSUMER_CONCURRENCY")
+	}
+	// A budget of one would dead-letter on the first transient failure,
+	// defeating the retry ladder entirely.
+	if cfg.ConsumerMaxAttempts < 2 {
+		return Config{}, errors.New("CONSUMER_MAX_ATTEMPTS must be greater than one")
+	}
+	if len(cfg.ConsumerRetryDelays) == 0 {
+		return Config{}, errors.New("CONSUMER_RETRY_DELAYS must list at least one delay")
+	}
+	previous := time.Duration(0)
+	for _, delay := range cfg.ConsumerRetryDelays {
+		if delay <= 0 {
+			return Config{}, errors.New("CONSUMER_RETRY_DELAYS must contain only positive delays")
+		}
+		// Ascending order is what makes the ladder a backoff. Out of order it
+		// would still work, but it would no longer be one.
+		if delay <= previous {
+			return Config{}, errors.New("CONSUMER_RETRY_DELAYS must be strictly ascending")
+		}
+		previous = delay
+	}
+	// The worker runs the relay and the consumer over one pool. Each consumer
+	// worker holds a connection for its whole transaction, so a pool that
+	// cannot cover them plus the relay and the health check deadlocks under
+	// load rather than merely slowing down.
+	const relayAndHealthConnections = 2
+	if requireRabbitMQ && cfg.DatabaseMaxOpenConnections < cfg.ConsumerConcurrency+relayAndHealthConnections {
+		return Config{}, fmt.Errorf(
+			"DATABASE_MAX_OPEN_CONNECTIONS must be at least CONSUMER_CONCURRENCY plus %d for the relay and health checks (%d)",
+			relayAndHealthConnections, cfg.ConsumerConcurrency+relayAndHealthConnections)
 	}
 	if cfg.OTelEnabled && cfg.OTelExporterEndpoint == "" {
 		return Config{}, errors.New("OTEL_EXPORTER_OTLP_ENDPOINT is required when telemetry is enabled")

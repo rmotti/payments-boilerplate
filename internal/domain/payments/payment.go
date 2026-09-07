@@ -27,6 +27,11 @@ const (
 	StatusSucceeded  Status = "succeeded"
 	StatusFailed     Status = "failed"
 	StatusCancelled  Status = "cancelled"
+	// Refund states are already part of the persisted payment vocabulary. They
+	// are terminal for checkout events: a late session event must never move a
+	// refunded payment back to processing, failed or succeeded.
+	StatusPartiallyRefunded Status = "partially_refunded"
+	StatusRefunded          Status = "refunded"
 )
 
 // AttemptStatus is the state of one interaction with the provider.

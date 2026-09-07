@@ -25,12 +25,13 @@ ficam em [docs/roadmap.md](docs/roadmap.md), que é a fonte de verdade.
 | Fase 0 — Definições de fundação | Concluída | Visão, limites, decisões técnicas e convenções |
 | Fase 1 — Fundação executável | Concluída | API, banco, migrations, observabilidade, CI e deploy documentado |
 | Fase 2 — Primeiro pagamento vertical | Concluída | API key, pedido idempotente, consulta e Stripe Checkout em BRL |
-| Fase 3 — Confirmação assíncrona confiável | Em andamento | Webhook, inbox/outbox e relay entregues; consumer, DLQ e Pix pendentes |
+| Fase 3 — Confirmação assíncrona confiável | Em andamento | Webhook, inbox/outbox, relay e consumer entregues; inspeção e Pix pendentes |
 | Fase 4 — Qualidade para publicação | Planejada | Hardening, testes de falha, métricas e guias operacionais |
 
-Hoje o pagamento pode terminar como `paid` na Stripe, mas pedido, pagamento e
-tentativa permanecem `pending` localmente. Somente um webhook verificado poderá
-alterar esse estado depois da implementação da Fase 3.
+Um pagamento concluído na Stripe agora chega ao estado local: o webhook
+verificado é gravado na inbox, publicado pelo relay e aplicado pelo consumer,
+que move tentativa, pagamento e pedido em uma única transação. Nenhuma URL de
+retorno altera estado.
 
 ## Desenvolvimento local
 
@@ -68,9 +69,10 @@ make run-api
 make run-worker
 ```
 
-Neste momento o processo `worker` publica seu healthcheck e executa o relay do
-outbox, que declara a topologia do RabbitMQ e publica as mensagens gravadas pela
-API. O consumer entra no restante da Fase 3.
+O processo `worker` publica seu healthcheck e executa dois componentes: o relay
+do outbox, que declara a topologia do RabbitMQ e publica as mensagens gravadas
+pela API, e o consumer, que as aplica com ack manual, concorrência limitada,
+retry com backoff e dead-letter queue.
 
 A API fica disponível em `http://localhost:8080`, a documentação em
 `http://localhost:8080/docs/` e o painel local do RabbitMQ em
@@ -119,10 +121,10 @@ curl --fail --show-error \
   -H "X-API-Key: $API_KEY"
 ```
 
-O pagamento é concluído na Stripe, o webhook registra o evento de forma durável
-e o relay publica a mensagem no RabbitMQ, mas o pedido local permanece
-`pending`: o consumer que aplica a transição ainda será implementado. A página
-de retorno nunca confirma pagamento.
+O pagamento é concluído na Stripe, o webhook registra o evento de forma durável,
+o relay publica a mensagem no RabbitMQ e o consumer aplica a transição: o pedido
+chega a `paid` e o pagamento a `succeeded`. A página de retorno nunca confirma
+pagamento; somente o evento verificado altera estado.
 
 Para incluir o ambiente de observabilidade:
 
