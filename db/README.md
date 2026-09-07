@@ -117,18 +117,21 @@ dialogo com o provedor; o pagamento e a conclusao.
 
 ### webhook_events
 
-O schema do inbox duravel dos eventos recebidos ja existe, mas nenhuma linha e
-gravada pelo runtime atual. Na Fase 3, a linha sera inserida dentro da requisicao
+O inbox duravel dos eventos recebidos. A linha e inserida dentro da requisicao
 do webhook, antes de qualquer efeito de negocio, e so depois disso a API
-respondera sucesso ao provedor.
+responde sucesso ao provedor.
 
-O evento sera guardado em duas formas. `raw_payload` preservara os bytes exatos
-que o provedor assinou, pois `jsonb` reordena chaves e descarta formatacao, e
-esses bytes desaparecem junto com a requisicao. `payload` guardara o mesmo
-evento desserializado, para consulta e reprocessamento.
+O evento e guardado em duas formas. `raw_payload` preserva os bytes exatos que o
+provedor assinou, pois `jsonb` reordena chaves e descarta formatacao, e esses
+bytes desaparecem junto com a requisicao. `payload` guarda o mesmo evento
+desserializado, para consulta e reprocessamento.
 
-`attempts` e `last_error` sustentarao retry com backoff e diagnostico do que
-parou na dead-letter queue.
+Um evento cujo tipo a aplicacao nao trata tambem e gravado, com status
+`skipped`, para manter a trilha de auditoria sem enfileirar trabalho.
+
+`attempts` e `last_error` sustentam retry com backoff e diagnostico do que
+parou na dead-letter queue. `replay_count` e `last_replayed_at` registram cada
+reprocessamento operacional sem duplicar a inbox ou sua mensagem de outbox.
 
 ## Relacionamentos
 
@@ -170,9 +173,9 @@ nao e `failed` nem `cancelled`. Cobrancas mortas saem do indice e viram
 historico, entao um retry e sempre possivel. Qualquer outro estado ocupa a vaga
 unica do pedido.
 
-No runtime da Fase 2, uma falha ambigua no provedor mantem a tentativa ativa e
-deve ser retomada com a mesma `Idempotency-Key`. As transicoes que liberam uma
-nova tentativa entram na Fase 3.
+Uma falha ambigua no provedor mantem a tentativa ativa e deve ser retomada com
+a mesma `Idempotency-Key`. As transicoes assíncronas da Fase 3 liberam uma nova
+tentativa somente depois de falha ou expiração confirmada.
 
 O efeito colateral e que um webhook fora de ordem nao consegue reviver uma
 cobranca antiga enquanto existir uma liquidada, porque a transicao esbarra no
@@ -200,27 +203,75 @@ POST /v1/orders/{orderId}/checkout
   -> cria a sessao no provedor
   UPDATE payment_attempts            status pending, guarda sessao, URL e expiracao
 
-Fase 3: webhook do provedor
+Webhook do provedor
   BEGIN
     INSERT webhook_events            status pending, dentro da requisicao
     INSERT outbox_events             mesma transacao
   COMMIT
   -> resposta 2xx ao provedor
 
-Fase 3: worker
-  UPDATE payment_attempts            resultado da tentativa
-  UPDATE payments                    estado financeiro consolidado
-  UPDATE orders                      status paid, na mesma transacao
-  UPDATE webhook_events              status processed
+Relay do outbox
+  BEGIN
+    UPDATE outbox_events             status publishing, locked_until, locked_by
+                                     (FOR UPDATE SKIP LOCKED na selecao)
+  COMMIT
+  -> publica no RabbitMQ e aguarda o publisher confirm
+  BEGIN
+    UPDATE outbox_events             status published, published_at
+                                     ou next_attempt_at com backoff
+  COMMIT
+
+Consumer
+  BEGIN
+    UPDATE payment_attempts          resultado da tentativa
+    UPDATE payments                  estado financeiro consolidado
+    UPDATE orders                    status paid
+    UPDATE webhook_events            status processed
+  COMMIT
 ```
 
-Na Fase 3, as quatro atualizacoes do worker ocorrerao em uma unica transacao. E
-isso que impedira o pedido de dizer `paid` enquanto a cobranca ainda estiver
-`processing`.
+As quatro atualizacoes do worker ocorrem em uma unica transacao, o que impede o
+pedido de dizer `paid` enquanto a cobranca ainda estiver `processing`.
+
+### outbox_events
+
+Registra a intencao de publicar uma mensagem. A linha e criada na mesma
+transacao do `webhook_events` que a originou: ou as duas existem, ou nenhuma
+existe. E isso que fecha a janela entre commitar no PostgreSQL e publicar no
+RabbitMQ, que nao compartilham transacao.
+
+A tabela nao guarda o payload do provedor. Ela carrega a referencia ao evento,
+o tipo em vocabulario de dominio, a versao do schema da mensagem, a routing key,
+a correlacao e o instante de ocorrencia; o consumidor rele o inbox para obter a
+copia canonica. As razoes estao no ADR 0011.
+
+O indice parcial sobre linhas nao publicadas existe para o relay varrer apenas
+o que falta publicar, sem caminhar sobre historico.
+
+O relay trabalha por lease, nao por lock mantido. Uma transacao curta seleciona
+mensagens vencidas com `FOR UPDATE SKIP LOCKED`, marca `publishing` e grava
+`locked_until` e `locked_by`; a publicacao acontece sem transacao aberta; outra
+transacao curta grava o desfecho. Nenhum lock existe durante I/O de rede.
+
+Enquanto o lease vale, outra instancia nao recebe a mensagem. Nao ha renovacao:
+quando o prazo passa sem liquidacao, ela volta ao conjunto de trabalho, que e
+como um relay morto devolve o que estava fazendo.
+
+Os prazos persistidos sao calculados por `now()` no banco, nunca pelos
+processos: com varias instancias, o PostgreSQL e o unico relogio compartilhado.
+Para interromper a publicacao, o worker usa uma janela monotônica conservadora
+iniciada antes de pedir o lease, sem interpretar o timestamp do banco com seu
+proprio relogio. O `locked_by` identifica o processo, com sufixo aleatorio, e
+nao apenas a maquina. A liquidacao exige lease vigente e do proprio dono;
+quando nenhuma linha e atualizada, isso e reportado como lease perdido em vez
+de sucesso.
+
+Uma linha so vira `published` depois do publisher confirm do broker. Falhas
+transitorias reagendam `next_attempt_at` com backoff e jitter, e nunca descartam
+a mensagem. Apenas um erro classificado como permanente leva a `failed`.
 
 ## Ainda nao modelado
 
-- `outbox_events`, introduzida na Fase 3 junto com o relay.
 - `refunds`, que hoje existe apenas como estado em `payments.status`. O schema
   sabe que houve reembolso, mas nao quanto nem quantos.
 - `customers`, fora do escopo da versao 0.1.

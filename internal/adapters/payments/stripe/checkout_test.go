@@ -21,7 +21,7 @@ func (s *sessionCreatorStub) Create(_ context.Context, params *stripesdk.Checkou
 	return s.session, s.err
 }
 
-func TestCreateCheckoutMapsHostedCardSession(t *testing.T) {
+func TestCreateCheckoutMapsHostedCardAndPixSession(t *testing.T) {
 	t.Parallel()
 
 	creator := &sessionCreatorStub{session: &stripesdk.CheckoutSession{
@@ -46,8 +46,10 @@ func TestCreateCheckoutMapsHostedCardSession(t *testing.T) {
 		stripesdk.StringValue(params.CancelURL) != "https://shop.test/cancel" {
 		t.Fatalf("params = %#v, want hosted payment URLs and payment mode", params)
 	}
-	if len(params.PaymentMethodTypes) != 1 || stripesdk.StringValue(params.PaymentMethodTypes[0]) != string(stripesdk.PaymentMethodTypeCard) {
-		t.Fatalf("payment method types = %#v, want card", params.PaymentMethodTypes)
+	if len(params.PaymentMethodTypes) != 2 ||
+		stripesdk.StringValue(params.PaymentMethodTypes[0]) != string(stripesdk.PaymentMethodTypeCard) ||
+		stripesdk.StringValue(params.PaymentMethodTypes[1]) != string(stripesdk.PaymentMethodTypePix) {
+		t.Fatalf("payment method types = %#v, want card and Pix", params.PaymentMethodTypes)
 	}
 	line := params.LineItems[0]
 	if stripesdk.Int64Value(line.Quantity) != 2 || stripesdk.Int64Value(line.PriceData.UnitAmount) != 10000 ||

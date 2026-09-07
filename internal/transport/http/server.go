@@ -25,6 +25,17 @@ const (
 	// maxBodyBytes bounds request bodies. The public API only receives small
 	// JSON documents; anything larger is rejected before it is decoded.
 	maxBodyBytes = 64 << 10
+
+	// webhookPath is the one route whose body is not written by the
+	// integrator, so its size is not ours to keep small.
+	webhookPath = "/v1/webhooks/stripe"
+
+	// webhookMaxBodyBytes gives provider events their own headroom. An event
+	// rejected for size cannot have its signature verified, and treating that
+	// as a client error would turn a local misconfiguration into permanent
+	// event loss, so the limit is deliberately generous and the overflow is
+	// answered with 500 so the provider redelivers.
+	webhookMaxBodyBytes = 512 << 10
 )
 
 type correlationKey struct{}
@@ -161,13 +172,21 @@ func recoveryMiddleware(logger *zap.Logger, next http.Handler) http.Handler {
 }
 
 // bodyLimitMiddleware caps the bytes a handler can read from the request body.
+// It runs before routing, so the limit is chosen from the path.
 func bodyLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+			r.Body = http.MaxBytesReader(w, r.Body, bodyLimitFor(r.URL.Path))
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func bodyLimitFor(path string) int64 {
+	if path == webhookPath {
+		return webhookMaxBodyBytes
+	}
+	return maxBodyBytes
 }
 
 // requestErrorHandler answers failures that happen before the operation runs:

@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	orderapp "github.com/rmotti/payments-boilerplate/internal/application/orders"
 	paymentapp "github.com/rmotti/payments-boilerplate/internal/application/payments"
+	webhookapp "github.com/rmotti/payments-boilerplate/internal/application/webhooks"
 	orderdomain "github.com/rmotti/payments-boilerplate/internal/domain/orders"
+	webhookdomain "github.com/rmotti/payments-boilerplate/internal/domain/webhooks"
 	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/transport/http/openapi"
 )
@@ -27,18 +30,41 @@ type CheckoutCreator interface {
 	CreateCheckout(ctx context.Context, in paymentapp.CreateInput) (paymentapp.Checkout, error)
 }
 
+// WebhookReceiver durably accepts one verified provider event.
+type WebhookReceiver interface {
+	Receive(ctx context.Context, in webhookapp.ReceiveInput) (webhookapp.Outcome, error)
+}
+
+// WebhookOperations exposes non-sensitive inspection and failed-event replay.
+type WebhookOperations interface {
+	List(ctx context.Context, status webhookdomain.Status, limit int) ([]webhookapp.EventInspection, error)
+	Reprocess(ctx context.Context, eventID string) (webhookapp.EventInspection, error)
+}
+
 // APIHandler implements the generated strict OpenAPI contract.
 type APIHandler struct {
-	health    *health.Service
-	orders    OrderCreator
-	checkouts CheckoutCreator
+	health     *health.Service
+	orders     OrderCreator
+	checkouts  CheckoutCreator
+	webhooks   WebhookReceiver
+	operations WebhookOperations
 }
 
 // NewAPIHandler composes the HTTP handlers required by the OpenAPI contract.
 // A nil orders service makes order operations answer 501, which is what the
 // worker wants: it shares the contract but only serves health.
-func NewAPIHandler(healthService *health.Service, orders OrderCreator, checkouts CheckoutCreator) *APIHandler {
-	return &APIHandler{health: healthService, orders: orders, checkouts: checkouts}
+func NewAPIHandler(
+	healthService *health.Service,
+	orders OrderCreator,
+	checkouts CheckoutCreator,
+	webhooks WebhookReceiver,
+	operations ...WebhookOperations,
+) *APIHandler {
+	handler := &APIHandler{health: healthService, orders: orders, checkouts: checkouts, webhooks: webhooks}
+	if len(operations) > 0 {
+		handler.operations = operations[0]
+	}
+	return handler
 }
 
 // GetHealth returns aggregate process readiness.
@@ -174,4 +200,148 @@ func createCheckoutError(ctx context.Context, err error) (openapi.CreateCheckout
 	default:
 		return nil, fmt.Errorf("create checkout: %w", err)
 	}
+}
+
+// ListWebhookEvents returns only operational metadata, never provider payloads.
+func (h *APIHandler) ListWebhookEvents(
+	ctx context.Context,
+	request openapi.ListWebhookEventsRequestObject,
+) (openapi.ListWebhookEventsResponseObject, error) {
+	if h.operations == nil {
+		return nil, ErrNotServed
+	}
+	status := webhookdomain.Status("")
+	if request.Params.Status != nil {
+		status = webhookdomain.Status(*request.Params.Status)
+	}
+	limit := 0
+	if request.Params.Limit != nil {
+		limit = *request.Params.Limit
+	}
+	events, err := h.operations.List(ctx, status, limit)
+	if err != nil {
+		if errors.Is(err, webhookapp.ErrInvalidStatus) || errors.Is(err, webhookapp.ErrInvalidLimit) {
+			return openapi.ListWebhookEvents400JSONResponse(newError(ctx, codeInvalidRequest, err.Error())), nil
+		}
+		return nil, fmt.Errorf("list webhook events: %w", err)
+	}
+	items := make([]openapi.WebhookEventInspection, 0, len(events))
+	for _, event := range events {
+		items = append(items, webhookEventResponse(event))
+	}
+	return openapi.ListWebhookEvents200JSONResponse{Items: items}, nil
+}
+
+// ReprocessWebhookEvent atomically returns failed work to the outbox relay.
+func (h *APIHandler) ReprocessWebhookEvent(
+	ctx context.Context,
+	request openapi.ReprocessWebhookEventRequestObject,
+) (openapi.ReprocessWebhookEventResponseObject, error) {
+	if h.operations == nil {
+		return nil, ErrNotServed
+	}
+	event, err := h.operations.Reprocess(ctx, string(request.WebhookEventId))
+	if err != nil {
+		switch {
+		case errors.Is(err, webhookapp.ErrEventNotFound):
+			return openapi.ReprocessWebhookEvent404JSONResponse(
+				newError(ctx, codeWebhookEventNotFound, webhookapp.ErrEventNotFound.Error())), nil
+		case errors.Is(err, webhookapp.ErrEventNotReplayable):
+			return openapi.ReprocessWebhookEvent409JSONResponse(
+				newError(ctx, codeWebhookEventNotReplayable, webhookapp.ErrEventNotReplayable.Error())), nil
+		default:
+			return nil, fmt.Errorf("reprocess webhook event: %w", err)
+		}
+	}
+	return openapi.ReprocessWebhookEvent202JSONResponse(webhookEventResponse(event)), nil
+}
+
+func webhookEventResponse(event webhookapp.EventInspection) openapi.WebhookEventInspection {
+	response := openapi.WebhookEventInspection{
+		Id: event.ID, Provider: string(event.Provider), ProviderEventId: event.ProviderEventID,
+		EventType: event.EventType, Status: openapi.WebhookEventStatus(event.Status),
+		Attempts: event.Attempts, ReceivedAt: event.ReceivedAt, ProcessedAt: event.ProcessedAt,
+		LastError: optionalString(event.LastError), UpdatedAt: event.UpdatedAt,
+		ReplayCount: event.ReplayCount, LastReplayedAt: event.LastReplayedAt,
+	}
+	if event.Outbox != nil {
+		response.Outbox = &openapi.OutboxInspection{
+			Id: event.Outbox.ID, Status: openapi.OutboxInspectionStatus(event.Outbox.Status),
+			Attempts: event.Outbox.Attempts, PublishedAt: event.Outbox.PublishedAt,
+			LastError: optionalString(event.Outbox.LastError), NextAttemptAt: event.Outbox.NextAttemptAt,
+		}
+	}
+	return response
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+// ReceiveStripeWebhook durably accepts a signed provider event.
+//
+// The status code decides whether the provider keeps the event alive: Stripe
+// ends its retries only on 2xx and redelivers on anything else, 400 included.
+// So the rule is to answer 2xx only once the event is durably stored, and to
+// use the non-2xx codes to say why it was not. See ADR 0011.
+func (h *APIHandler) ReceiveStripeWebhook(
+	ctx context.Context,
+	request openapi.ReceiveStripeWebhookRequestObject,
+) (openapi.ReceiveStripeWebhookResponseObject, error) {
+	if h.webhooks == nil {
+		return nil, ErrNotServed
+	}
+
+	rawBody, err := readWebhookBody(request.Body)
+	if err != nil {
+		// The body could not be read whole, so the signature could never be
+		// checked. Unlike a forged signature this is our own limit, and a
+		// redelivery works once it is raised, so the provider must retry.
+		return nil, fmt.Errorf("%w: %w", webhookapp.ErrPayloadTooLarge, err)
+	}
+
+	var signature string
+	if request.Params.StripeSignature != nil {
+		signature = *request.Params.StripeSignature
+	}
+
+	outcome, err := h.webhooks.Receive(ctx, webhookapp.ReceiveInput{
+		RawBody:       rawBody,
+		Signature:     signature,
+		CorrelationID: correlationIDFromContext(ctx),
+	})
+	if err != nil {
+		if errors.Is(err, webhookapp.ErrInvalidSignature) {
+			// Absent, forged and expired signatures answer the same way, so
+			// the response never tells an attacker which of the three it was.
+			// Stripe will still redeliver, and every attempt will fail the same
+			// way until the endpoint secret is fixed; the invalid-signature
+			// metric is what turns that into an alert.
+			return openapi.ReceiveStripeWebhook400JSONResponse(
+				newError(ctx, codeInvalidSignature, webhookapp.ErrInvalidSignature.Error()),
+			), nil
+		}
+		// Storage failed. Answering 500 is deliberate: the provider is the only
+		// thing that can deliver this event again.
+		return nil, fmt.Errorf("receive stripe webhook: %w", err)
+	}
+
+	if outcome == webhookapp.OutcomeAccepted {
+		return openapi.ReceiveStripeWebhook202Response{}, nil
+	}
+	// Duplicate or ignored: nothing was queued, and nothing should be retried.
+	return openapi.ReceiveStripeWebhook200Response{}, nil
+}
+
+// readWebhookBody reads the request bytes exactly as they arrived. They must
+// reach signature verification untouched: parsing and re-encoding would reorder
+// keys and drop whitespace, and the recomputed signature would never match.
+func readWebhookBody(body io.Reader) ([]byte, error) {
+	if body == nil {
+		return nil, nil
+	}
+	return io.ReadAll(body)
 }

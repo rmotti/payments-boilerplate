@@ -42,7 +42,9 @@ está registrada no [ADR 0010](decisions/0010-route-access-model.md):
 | `POST /v1/orders` | Header `X-API-Key` obrigatório |
 | `POST /v1/orders/{orderId}/checkout` | Header `X-API-Key` obrigatório |
 | `GET /v1/orders/{orderId}` | Header `X-API-Key` obrigatório |
-| `POST /v1/webhooks/stripe` — Fase 3 | Sem API key; assinatura Stripe obrigatória |
+| `GET /v1/webhook-events` | Header `X-API-Key` obrigatório |
+| `POST /v1/webhook-events/{webhookEventId}/reprocess` | Header `X-API-Key` obrigatório |
+| `POST /v1/webhooks/stripe` | Sem API key; assinatura Stripe obrigatória |
 | `GET /health` | Público, com resposta mínima |
 | `GET /docs` e `GET /openapi.yaml` | Públicos enquanto a documentação estiver habilitada; o comando `api` atual os habilita em todos os ambientes |
 
@@ -129,7 +131,7 @@ Headers:
 | `Idempotency-Key` | sim | Identifica esta tentativa de checkout. |
 
 O caso de uso carrega o pedido persistido e envia à Stripe somente o preço em
-BRL conhecido pelo servidor. A Checkout Session usa `mode=payment`, cartão,
+BRL conhecido pelo servidor. A Checkout Session usa `mode=payment`, cartão e Pix,
 `client_reference_id` e metadata com IDs locais opacos. A resposta só é enviada
 depois que o ID da sessão, a URL e sua expiração estão ligados ao
 `PaymentAttempt` local.
@@ -169,23 +171,69 @@ distingue esses casos.
 O `status` do pedido usa vocabulario comercial (`pending`, `paid`, `cancelled`,
 `expired`) e nao os estados financeiros da cobranca. Uma tentativa recusada nao
 altera o pedido, que permanece `pending` ate ser pago, cancelado ou expirado.
-Até a implementação da Fase 3, o endpoint continuará retornando `pending` mesmo
-depois que a Stripe concluir o pagamento.
+O pedido passa a `paid` quando o worker processar o evento confirmado pela
+Stripe. Para Pix, a sessão completa ainda não paga leva o pagamento a
+`processing`; somente o evento assíncrono de sucesso leva o pedido a `paid`.
 
-### `POST /v1/webhooks/stripe` — planejado para a Fase 3
+### `GET /v1/webhook-events`
 
-Este endpoint ainda não existe no runtime nem no contrato OpenAPI atual. Quando
-for implementado, receberá eventos assinados pela Stripe.
+Lista, com `X-API-Key`, os metadados operacionais mais recentes da inbox e da
+outbox. Aceita `status` (`pending`, `processing`, `processed`, `failed` ou
+`skipped`) e `limit` de 1 a 100, com padrão 50. Payload bruto e JSON do provedor
+nunca aparecem nessa resposta.
 
-Não será um endpoint destinado ao sistema integrador. O header
-`Stripe-Signature` deverá ser verificado sobre o corpo bruto antes que o evento
-seja aceito e persistido.
+### `POST /v1/webhook-events/{webhookEventId}/reprocess`
 
-O Swagger documentará esse endpoint, mas não tentará fabricar assinaturas
-válidas. Os testes serão feitos com a Stripe CLI e fixtures controladas.
+Reenfileira apenas um evento cuja inbox ou publicação da outbox esteja em
+`failed`. A transação bloqueia as duas linhas, reutiliza o `messageId` original,
+zera o budget da etapa que falhou e registra `replayCount` e `lastReplayedAt`.
+Um replay concorrente ou de trabalho que já voltou a `pending` recebe `409`
+`webhook_event_not_replayable`; um ID inexistente recebe `404`
+`webhook_event_not_found`.
 
-O mapeamento dos eventos está documentado no
-[plano da integração com Stripe](providers/stripe.md).
+### `POST /v1/webhooks/stripe`
+
+Recebe eventos assinados pela Stripe. Não é um endpoint destinado ao sistema
+integrador e não usa a chave de integração: a confiança vem da verificação
+criptográfica do header `Stripe-Signature` sobre os bytes exatos do corpo,
+antes de qualquer desserialização.
+
+A operação apenas registra o evento de forma durável e cria, na mesma
+transação, a mensagem de outbox correspondente. Nenhum estado de pagamento muda
+dentro da requisição; isso pertence ao worker.
+
+A Stripe encerra as tentativas apenas diante de um `2xx` e reenvia o evento
+diante de qualquer outra resposta, `400` incluído. Por isso o `2xx` só aparece
+quando o evento está gravado; os códigos de erro se distinguem entre si para
+quem opera a instalação, não para mudar o que a Stripe faz:
+
+| Situação | Status |
+| --- | --- |
+| Evento novo aceito e enfileirado | `202` |
+| Evento já recebido antes | `200` |
+| Tipo de evento não tratado, apenas registrado | `200` |
+| Assinatura ausente, inválida ou fora da janela de tempo | `400` |
+| Corpo acima do limite do endpoint | `500` |
+| Falha ao registrar o evento | `500` |
+
+O `400` de assinatura usa o código estável `invalid_signature` e não distingue
+uma assinatura ausente de uma forjada ou expirada, para não revelar a um
+atacante qual das três ocorreu. O corpo acima do limite responde `500`, e não
+`400`, porque a causa é o limite configurado localmente: é algo que a
+instalação conserta e que a entrega seguinte resolve, ao contrário de uma
+assinatura que nunca vai verificar. A Stripe reentrega nos dois casos; a
+distinção existe para que um limite mal dimensionado não se esconda no ruído
+das assinaturas inválidas.
+
+O corpo da resposta segue a estrutura de erro comum, mas a Stripe lê apenas o
+status; ele existe para a observabilidade da própria instalação.
+
+O Swagger documenta o endpoint, mas não fabrica assinaturas válidas. Os testes
+usam fixtures assinadas localmente e a Stripe CLI.
+
+As decisões de resposta e do conteúdo da mensagem estão no
+[ADR 0011](decisions/0011-webhook-reception-and-outbox.md), e o mapeamento dos
+eventos no [plano da integração com Stripe](providers/stripe.md).
 
 ### `GET /health`
 
@@ -207,6 +255,6 @@ na Fase 4.
 - Catálogo público ou gerenciamento de produtos.
 - Reembolsos.
 - Assinaturas.
-- Operações administrativas.
+- Painel administrativo e operações financeiras manuais.
 - Relatórios e conciliação.
 - Upload ou captura de dados de cartão.

@@ -11,7 +11,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -60,22 +62,73 @@ func (e HealthResponseStatus) Valid() bool {
 
 // Defines values for OrderStatus.
 const (
-	Cancelled OrderStatus = "cancelled"
-	Expired   OrderStatus = "expired"
-	Paid      OrderStatus = "paid"
-	Pending   OrderStatus = "pending"
+	OrderStatusCancelled OrderStatus = "cancelled"
+	OrderStatusExpired   OrderStatus = "expired"
+	OrderStatusPaid      OrderStatus = "paid"
+	OrderStatusPending   OrderStatus = "pending"
 )
 
 // Valid indicates whether the value is a known member of the OrderStatus enum.
 func (e OrderStatus) Valid() bool {
 	switch e {
-	case Cancelled:
+	case OrderStatusCancelled:
 		return true
-	case Expired:
+	case OrderStatusExpired:
 		return true
-	case Paid:
+	case OrderStatusPaid:
 		return true
-	case Pending:
+	case OrderStatusPending:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OutboxInspectionStatus.
+const (
+	OutboxInspectionStatusFailed     OutboxInspectionStatus = "failed"
+	OutboxInspectionStatusPending    OutboxInspectionStatus = "pending"
+	OutboxInspectionStatusPublished  OutboxInspectionStatus = "published"
+	OutboxInspectionStatusPublishing OutboxInspectionStatus = "publishing"
+)
+
+// Valid indicates whether the value is a known member of the OutboxInspectionStatus enum.
+func (e OutboxInspectionStatus) Valid() bool {
+	switch e {
+	case OutboxInspectionStatusFailed:
+		return true
+	case OutboxInspectionStatusPending:
+		return true
+	case OutboxInspectionStatusPublished:
+		return true
+	case OutboxInspectionStatusPublishing:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WebhookEventStatus.
+const (
+	WebhookEventStatusFailed     WebhookEventStatus = "failed"
+	WebhookEventStatusPending    WebhookEventStatus = "pending"
+	WebhookEventStatusProcessed  WebhookEventStatus = "processed"
+	WebhookEventStatusProcessing WebhookEventStatus = "processing"
+	WebhookEventStatusSkipped    WebhookEventStatus = "skipped"
+)
+
+// Valid indicates whether the value is a known member of the WebhookEventStatus enum.
+func (e WebhookEventStatus) Valid() bool {
+	switch e {
+	case WebhookEventStatusFailed:
+		return true
+	case WebhookEventStatusPending:
+		return true
+	case WebhookEventStatusProcessed:
+		return true
+	case WebhookEventStatusProcessing:
+		return true
+	case WebhookEventStatusSkipped:
 		return true
 	default:
 		return false
@@ -144,11 +197,52 @@ type Order struct {
 // OrderStatus Estado comercial do pedido.
 type OrderStatus string
 
+// OutboxInspection defines model for OutboxInspection.
+type OutboxInspection struct {
+	Attempts      int                    `json:"attempts"`
+	Id            string                 `json:"id"`
+	LastError     *string                `json:"lastError,omitempty"`
+	NextAttemptAt time.Time              `json:"nextAttemptAt"`
+	PublishedAt   *time.Time             `json:"publishedAt,omitempty"`
+	Status        OutboxInspectionStatus `json:"status"`
+}
+
+// OutboxInspectionStatus defines model for OutboxInspection.Status.
+type OutboxInspectionStatus string
+
+// WebhookEventInspection defines model for WebhookEventInspection.
+type WebhookEventInspection struct {
+	Attempts        int                `json:"attempts"`
+	EventType       string             `json:"eventType"`
+	Id              string             `json:"id"`
+	LastError       *string            `json:"lastError,omitempty"`
+	LastReplayedAt  *time.Time         `json:"lastReplayedAt,omitempty"`
+	Outbox          *OutboxInspection  `json:"outbox,omitempty"`
+	ProcessedAt     *time.Time         `json:"processedAt,omitempty"`
+	Provider        string             `json:"provider"`
+	ProviderEventId string             `json:"providerEventId"`
+	ReceivedAt      time.Time          `json:"receivedAt"`
+	ReplayCount     int                `json:"replayCount"`
+	Status          WebhookEventStatus `json:"status"`
+	UpdatedAt       time.Time          `json:"updatedAt"`
+}
+
+// WebhookEventList defines model for WebhookEventList.
+type WebhookEventList struct {
+	Items []WebhookEventInspection `json:"items"`
+}
+
+// WebhookEventStatus defines model for WebhookEventStatus.
+type WebhookEventStatus string
+
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
 
 // OrderId defines model for OrderId.
 type OrderId = string
+
+// WebhookEventId defines model for WebhookEventId.
+type WebhookEventId = string
 
 // CreateOrderParams defines parameters for CreateOrder.
 type CreateOrderParams struct {
@@ -164,6 +258,20 @@ type CreateCheckoutParams struct {
 	// ter entre 1 e 255 caracteres. Reenviar a mesma chave nao cria um
 	// segundo pedido.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// ListWebhookEventsParams defines parameters for ListWebhookEvents.
+type ListWebhookEventsParams struct {
+	Status *WebhookEventStatus `form:"status,omitempty" json:"status,omitempty"`
+	Limit  *int                `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ReceiveStripeWebhookParams defines parameters for ReceiveStripeWebhook.
+type ReceiveStripeWebhookParams struct {
+	// StripeSignature Assinatura do corpo bruto. Declarado como opcional para que a
+	// ausencia seja tratada pelo mesmo caminho de uma assinatura
+	// invalida, com o codigo de erro invalid_signature.
+	StripeSignature *string `json:"Stripe-Signature,omitempty"`
 }
 
 // CreateOrderJSONRequestBody defines body for CreateOrder for application/json ContentType.
@@ -183,6 +291,15 @@ type ServerInterface interface {
 	// CreateCheckout Cria ou recupera uma sessao hospedada de pagamento.
 	// (POST /v1/orders/{orderId}/checkout)
 	CreateCheckout(w http.ResponseWriter, r *http.Request, orderId OrderId, params CreateCheckoutParams)
+	// ListWebhookEvents Lista metadados operacionais da inbox e da outbox.
+	// (GET /v1/webhook-events)
+	ListWebhookEvents(w http.ResponseWriter, r *http.Request, params ListWebhookEventsParams)
+	// ReprocessWebhookEvent Reenfileira atomicamente um evento ou publicacao com falha.
+	// (POST /v1/webhook-events/{webhookEventId}/reprocess)
+	ReprocessWebhookEvent(w http.ResponseWriter, r *http.Request, webhookEventId WebhookEventId)
+	// ReceiveStripeWebhook Recebe um evento assinado pela Stripe.
+	// (POST /v1/webhooks/stripe)
+	ReceiveStripeWebhook(w http.ResponseWriter, r *http.Request, params ReceiveStripeWebhookParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -333,6 +450,119 @@ func (siw *ServerInterfaceWrapper) CreateCheckout(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// ListWebhookEvents operation middleware
+func (siw *ServerInterfaceWrapper) ListWebhookEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListWebhookEventsParams
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListWebhookEvents(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReprocessWebhookEvent operation middleware
+func (siw *ServerInterfaceWrapper) ReprocessWebhookEvent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "webhookEventId" -------------
+	var webhookEventId WebhookEventId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "webhookEventId", r.PathValue("webhookEventId"), &webhookEventId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "webhookEventId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReprocessWebhookEvent(w, r, webhookEventId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ReceiveStripeWebhook operation middleware
+func (siw *ServerInterfaceWrapper) ReceiveStripeWebhook(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ReceiveStripeWebhookParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Stripe-Signature" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Stripe-Signature")]; found {
+		var StripeSignature string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Stripe-Signature", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Stripe-Signature", valueList[0], &StripeSignature, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Stripe-Signature", Err: err})
+			return
+		}
+
+		params.StripeSignature = &StripeSignature
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReceiveStripeWebhook(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -457,6 +687,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/orders", wrapper.CreateOrder)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/orders/{orderId}", wrapper.GetOrder)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/orders/{orderId}/checkout", wrapper.CreateCheckout)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/webhook-events", wrapper.ListWebhookEvents)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/webhook-events/{webhookEventId}/reprocess", wrapper.ReprocessWebhookEvent)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/webhooks/stripe", wrapper.ReceiveStripeWebhook)
 
 	return m
 }
@@ -774,6 +1007,201 @@ func (response CreateCheckout502JSONResponse) VisitCreateCheckoutResponse(w http
 	return err
 }
 
+type ListWebhookEventsRequestObject struct {
+	Params ListWebhookEventsParams
+}
+
+type ListWebhookEventsResponseObject interface {
+	VisitListWebhookEventsResponse(w http.ResponseWriter) error
+}
+
+type ListWebhookEvents200JSONResponse WebhookEventList
+
+func (response ListWebhookEvents200JSONResponse) VisitListWebhookEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookEvents400JSONResponse Error
+
+func (response ListWebhookEvents400JSONResponse) VisitListWebhookEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookEvents401JSONResponse Error
+
+func (response ListWebhookEvents401JSONResponse) VisitListWebhookEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookEvents500JSONResponse Error
+
+func (response ListWebhookEvents500JSONResponse) VisitListWebhookEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReprocessWebhookEventRequestObject struct {
+	WebhookEventId WebhookEventId `json:"webhookEventId"`
+}
+
+type ReprocessWebhookEventResponseObject interface {
+	VisitReprocessWebhookEventResponse(w http.ResponseWriter) error
+}
+
+type ReprocessWebhookEvent202JSONResponse WebhookEventInspection
+
+func (response ReprocessWebhookEvent202JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReprocessWebhookEvent401JSONResponse Error
+
+func (response ReprocessWebhookEvent401JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReprocessWebhookEvent404JSONResponse Error
+
+func (response ReprocessWebhookEvent404JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReprocessWebhookEvent409JSONResponse Error
+
+func (response ReprocessWebhookEvent409JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReprocessWebhookEvent500JSONResponse Error
+
+func (response ReprocessWebhookEvent500JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReceiveStripeWebhookRequestObject struct {
+	Params ReceiveStripeWebhookParams
+	Body   io.Reader
+}
+
+type ReceiveStripeWebhookResponseObject interface {
+	VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error
+}
+
+type ReceiveStripeWebhook200Response struct {
+}
+
+func (response ReceiveStripeWebhook200Response) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+	w.WriteHeader(200)
+	return nil
+}
+
+type ReceiveStripeWebhook202Response struct {
+}
+
+func (response ReceiveStripeWebhook202Response) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+	w.WriteHeader(202)
+	return nil
+}
+
+type ReceiveStripeWebhook400JSONResponse Error
+
+func (response ReceiveStripeWebhook400JSONResponse) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReceiveStripeWebhook500JSONResponse Error
+
+func (response ReceiveStripeWebhook500JSONResponse) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetHealth Retorna a disponibilidade do processo e de suas dependencias.
@@ -788,6 +1216,15 @@ type StrictServerInterface interface {
 	// CreateCheckout Cria ou recupera uma sessao hospedada de pagamento.
 	// (POST /v1/orders/{orderId}/checkout)
 	CreateCheckout(ctx context.Context, request CreateCheckoutRequestObject) (CreateCheckoutResponseObject, error)
+	// ListWebhookEvents Lista metadados operacionais da inbox e da outbox.
+	// (GET /v1/webhook-events)
+	ListWebhookEvents(ctx context.Context, request ListWebhookEventsRequestObject) (ListWebhookEventsResponseObject, error)
+	// ReprocessWebhookEvent Reenfileira atomicamente um evento ou publicacao com falha.
+	// (POST /v1/webhook-events/{webhookEventId}/reprocess)
+	ReprocessWebhookEvent(ctx context.Context, request ReprocessWebhookEventRequestObject) (ReprocessWebhookEventResponseObject, error)
+	// ReceiveStripeWebhook Recebe um evento assinado pela Stripe.
+	// (POST /v1/webhooks/stripe)
+	ReceiveStripeWebhook(ctx context.Context, request ReceiveStripeWebhookRequestObject) (ReceiveStripeWebhookResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -939,49 +1376,157 @@ func (sh *strictHandler) CreateCheckout(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
+// ListWebhookEvents operation middleware
+func (sh *strictHandler) ListWebhookEvents(w http.ResponseWriter, r *http.Request, params ListWebhookEventsParams) {
+	var request ListWebhookEventsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListWebhookEvents(ctx, request.(ListWebhookEventsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListWebhookEvents")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListWebhookEventsResponseObject); ok {
+		if err := validResponse.VisitListWebhookEventsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ReprocessWebhookEvent operation middleware
+func (sh *strictHandler) ReprocessWebhookEvent(w http.ResponseWriter, r *http.Request, webhookEventId WebhookEventId) {
+	var request ReprocessWebhookEventRequestObject
+
+	request.WebhookEventId = webhookEventId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ReprocessWebhookEvent(ctx, request.(ReprocessWebhookEventRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ReprocessWebhookEvent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ReprocessWebhookEventResponseObject); ok {
+		if err := validResponse.VisitReprocessWebhookEventResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ReceiveStripeWebhook operation middleware
+func (sh *strictHandler) ReceiveStripeWebhook(w http.ResponseWriter, r *http.Request, params ReceiveStripeWebhookParams) {
+	var request ReceiveStripeWebhookRequestObject
+
+	request.Params = params
+
+	request.Body = r.Body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ReceiveStripeWebhook(ctx, request.(ReceiveStripeWebhookRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ReceiveStripeWebhook")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ReceiveStripeWebhookResponseObject); ok {
+		if err := validResponse.VisitReceiveStripeWebhookResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
 // Stored as a slice of fixed-width chunks rather than one concatenated
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"dCvYo0b1KpuLkTgIFeOfAwA=",
+	"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",
+	"s+tl5tLEudoW2TQ74lbY/w0A",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

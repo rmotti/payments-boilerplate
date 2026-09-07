@@ -22,6 +22,25 @@ type Order struct {
 	UpdatedAt      time.Time
 }
 
+type OutboxEvent struct {
+	ID             string
+	WebhookEventID string
+	EventType      string
+	SchemaVersion  int32
+	RoutingKey     string
+	CorrelationID  string
+	OccurredAt     time.Time
+	Status         string
+	Attempts       int32
+	PublishedAt    sql.NullTime
+	LastError      sql.NullString
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	LockedUntil    sql.NullTime
+	LockedBy       sql.NullString
+	NextAttemptAt  time.Time
+}
+
 type Payment struct {
 	ID        string
 	OrderID   string
@@ -62,4 +81,6 @@ type WebhookEvent struct {
 	ProcessedAt     sql.NullTime
 	LastError       sql.NullString
 	UpdatedAt       time.Time
+	ReplayCount     int32
+	LastReplayedAt  sql.NullTime
 }

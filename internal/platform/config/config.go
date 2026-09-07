@@ -11,7 +11,14 @@ import (
 
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
+	outboxapp "github.com/rmotti/payments-boilerplate/internal/application/outbox"
 )
+
+// PublishAttemptBudget is the ceiling one publish attempt may take, including
+// redialing the broker. It lives here, rather than being imported from the
+// adapter, because configuration must not depend on adapters; a test asserts
+// the two stay equal.
+const PublishAttemptBudget = 5 * time.Second
 
 // Config contains all process configuration loaded from environment variables.
 type Config struct {
@@ -27,6 +34,29 @@ type Config struct {
 	DatabaseConnectionMaxLifetime time.Duration `env:"DATABASE_CONNECTION_MAX_LIFETIME" envDefault:"30m"`
 
 	RabbitMQURL string `env:"RABBITMQ_URL"`
+
+	// Relay tuning. The defaults suit a single worker on a small deployment;
+	// they exist as configuration because the right values depend on volume.
+	OutboxBatchSize int           `env:"OUTBOX_BATCH_SIZE" envDefault:"20"`
+	OutboxInterval  time.Duration `env:"OUTBOX_INTERVAL" envDefault:"1s"`
+	// OutboxLeaseDuration must comfortably exceed the time to publish a whole
+	// batch: a lease that expires mid-publish lets another instance take the
+	// same message, which is safe but wasteful.
+	OutboxLeaseDuration time.Duration `env:"OUTBOX_LEASE_DURATION" envDefault:"2m"`
+	OutboxBackoffBase   time.Duration `env:"OUTBOX_BACKOFF_BASE" envDefault:"2s"`
+	OutboxBackoffMax    time.Duration `env:"OUTBOX_BACKOFF_MAX" envDefault:"5m"`
+	// OutboxAlertAfterAttempts only controls when a struggling message is
+	// reported. It never stops the retries: only a permanent failure does.
+	OutboxAlertAfterAttempts int `env:"OUTBOX_ALERT_AFTER_ATTEMPTS" envDefault:"10"`
+
+	// Consumer tuning. Prefetch bounds the messages in flight; concurrency
+	// bounds how many are applied at once. The retry delays are the ladder a
+	// transient failure walks, and the last one repeats until the attempt
+	// budget is spent.
+	ConsumerConcurrency int             `env:"CONSUMER_CONCURRENCY" envDefault:"4"`
+	ConsumerPrefetch    int             `env:"CONSUMER_PREFETCH" envDefault:"4"`
+	ConsumerMaxAttempts int             `env:"CONSUMER_MAX_ATTEMPTS" envDefault:"10"`
+	ConsumerRetryDelays []time.Duration `env:"CONSUMER_RETRY_DELAYS" envDefault:"5s,30s,2m,10m"`
 
 	IntegrationAPIKeys []string `env:"INTEGRATION_API_KEYS"`
 
@@ -87,6 +117,70 @@ func Load(serviceName, defaultHTTPAddress string, requireRabbitMQ bool) (Config,
 	if cfg.StartupTimeout <= 0 || cfg.ShutdownTimeout <= 0 {
 		return Config{}, errors.New("startup and shutdown timeouts must be positive")
 	}
+	if cfg.OutboxBatchSize < 1 {
+		return Config{}, errors.New("OUTBOX_BATCH_SIZE must be positive")
+	}
+	if cfg.OutboxInterval <= 0 {
+		return Config{}, errors.New("OUTBOX_INTERVAL must be positive")
+	}
+	if cfg.OutboxAlertAfterAttempts < 1 {
+		return Config{}, errors.New("OUTBOX_ALERT_AFTER_ATTEMPTS must be positive")
+	}
+	if cfg.OutboxBackoffBase <= 0 || cfg.OutboxBackoffMax <= 0 {
+		return Config{}, errors.New("outbox backoff durations must be positive")
+	}
+	if cfg.OutboxBackoffMax < cfg.OutboxBackoffBase {
+		return Config{}, errors.New("OUTBOX_BACKOFF_MAX must not be smaller than OUTBOX_BACKOFF_BASE")
+	}
+	// A lease shorter than the worst-case time to publish a whole batch would
+	// expire while the relay is still working through it. The publisher bounds
+	// each attempt. A final reserve is left for recording the outcome in
+	// PostgreSQL after the publication window closes.
+	minimumLease := time.Duration(cfg.OutboxBatchSize)*PublishAttemptBudget + outboxapp.SettlementReserve
+	if cfg.OutboxLeaseDuration < minimumLease {
+		return Config{}, fmt.Errorf(
+			"OUTBOX_LEASE_DURATION must be at least OUTBOX_BATCH_SIZE x %s + %s settlement reserve (%s)",
+			PublishAttemptBudget, outboxapp.SettlementReserve, minimumLease)
+	}
+	if cfg.ConsumerConcurrency < 1 {
+		return Config{}, errors.New("CONSUMER_CONCURRENCY must be positive")
+	}
+	// A prefetch below the concurrency starves workers: the broker refuses to
+	// deliver more unacknowledged messages than the prefetch allows, so the
+	// extra goroutines would sit idle forever.
+	if cfg.ConsumerPrefetch < cfg.ConsumerConcurrency {
+		return Config{}, errors.New("CONSUMER_PREFETCH must be at least CONSUMER_CONCURRENCY")
+	}
+	// A budget of one would dead-letter on the first transient failure,
+	// defeating the retry ladder entirely.
+	if cfg.ConsumerMaxAttempts < 2 {
+		return Config{}, errors.New("CONSUMER_MAX_ATTEMPTS must be greater than one")
+	}
+	if len(cfg.ConsumerRetryDelays) == 0 {
+		return Config{}, errors.New("CONSUMER_RETRY_DELAYS must list at least one delay")
+	}
+	previous := time.Duration(0)
+	for _, delay := range cfg.ConsumerRetryDelays {
+		if delay <= 0 {
+			return Config{}, errors.New("CONSUMER_RETRY_DELAYS must contain only positive delays")
+		}
+		// Ascending order is what makes the ladder a backoff. Out of order it
+		// would still work, but it would no longer be one.
+		if delay <= previous {
+			return Config{}, errors.New("CONSUMER_RETRY_DELAYS must be strictly ascending")
+		}
+		previous = delay
+	}
+	// The worker runs the relay and the consumer over one pool. Each consumer
+	// worker holds a connection for its whole transaction, so a pool that
+	// cannot cover them plus the relay and the health check deadlocks under
+	// load rather than merely slowing down.
+	const relayAndHealthConnections = 2
+	if requireRabbitMQ && cfg.DatabaseMaxOpenConnections < cfg.ConsumerConcurrency+relayAndHealthConnections {
+		return Config{}, fmt.Errorf(
+			"DATABASE_MAX_OPEN_CONNECTIONS must be at least CONSUMER_CONCURRENCY plus %d for the relay and health checks (%d)",
+			relayAndHealthConnections, cfg.ConsumerConcurrency+relayAndHealthConnections)
+	}
 	if cfg.OTelEnabled && cfg.OTelExporterEndpoint == "" {
 		return Config{}, errors.New("OTEL_EXPORTER_OTLP_ENDPOINT is required when telemetry is enabled")
 	}
@@ -99,6 +193,9 @@ func Load(serviceName, defaultHTTPAddress string, requireRabbitMQ bool) (Config,
 func (c Config) ValidateStripe() error {
 	if c.StripeSecretKey == "" {
 		return errors.New("STRIPE_SECRET_KEY is required for the API")
+	}
+	if c.StripeWebhookSecret == "" {
+		return errors.New("STRIPE_WEBHOOK_SECRET is required for the API")
 	}
 	if err := validateReturnURL("STRIPE_SUCCESS_URL", c.StripeSuccessURL); err != nil {
 		return err

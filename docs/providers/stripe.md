@@ -22,9 +22,8 @@ requisitos da conta devem ser avaliados por cada pessoa que adotar o projeto.
 - Stripe Checkout em página hospedada.
 - Checkout Session com `mode=payment`.
 - Uma moeda: `BRL`.
-- Cartão como primeiro meio de pagamento.
-- Pix depois que inbox, outbox, RabbitMQ e worker estiverem validados com
-  cartão.
+- Cartão e Pix como meios de pagamento em BRL, sujeitos à elegibilidade e à
+  configuração da conta Stripe.
 - SDK oficial `stripe-go`.
 - Versão do SDK fixada e atualizada deliberadamente, com testes de contrato.
 - Ambiente de testes da Stripe e Stripe CLI para webhooks locais.
@@ -44,7 +43,7 @@ A implementação lê as configurações do ambiente:
 | Variável | Finalidade |
 | --- | --- |
 | `STRIPE_SECRET_KEY` | Autenticar chamadas do backend à API da Stripe |
-| `STRIPE_WEBHOOK_SECRET` | Verificar assinaturas do endpoint de webhook na Fase 3 |
+| `STRIPE_WEBHOOK_SECRET` | Verificar assinaturas do endpoint de webhook |
 | `STRIPE_SUCCESS_URL` | Retorno do consumidor após o Checkout |
 | `STRIPE_CANCEL_URL` | Retorno quando o consumidor cancela o Checkout |
 
@@ -56,7 +55,7 @@ provedor.
 
 Para cada `PaymentAttempt`, o adapter cria uma nova Checkout Session. A chamada:
 
-1. usar `mode=payment` e a interface hospedada;
+1. usar `mode=payment`, a interface hospedada e oferecer `card` e `pix`;
 2. obter valor, moeda e descrição do pedido persistido;
 3. enviar um identificador local opaco em `client_reference_id` e em metadata,
    sem incluir dados pessoais;
@@ -66,8 +65,10 @@ Para cada `PaymentAttempt`, o adapter cria uma nova Checkout Session. A chamada:
 A reserva local permanece ativa se a chamada ao provedor falhar ou expirar por
 timeout. O cliente deve retomar a operação com a mesma `Idempotency-Key`;
 enquanto a tentativa estiver ativa, uma chave diferente é bloqueada para evitar
-cobranças concorrentes. As transições de falha e expiração, assim como a
-liberação segura de uma nova tentativa, serão implementadas na Fase 3.
+cobranças concorrentes. As transições de falha e expiração são aplicadas pelo
+consumer: uma sessão expirada move a tentativa para `expired` e deixa o
+pagamento em `pending`, o que libera o índice parcial para uma nova tentativa
+dentro do mesmo pagamento.
 
 O SDK oficial está fixado na série major `v86`. A aplicação depende de uma
 interface própria e pequena; somente o adapter importa os tipos da Stripe. A
@@ -84,12 +85,13 @@ seguinte.
    valores da `.env.example` retornam à documentação da API.
 3. Inicie PostgreSQL, migrations e API; crie um pedido e abra o checkout com os
    comandos do README.
-4. Abra `checkoutUrl` e use o cartão de teste `4242 4242 4242 4242`, uma data
-   futura e qualquer CVC.
+4. Abra `checkoutUrl` e escolha cartão ou Pix. Para cartão, use
+   `4242 4242 4242 4242`, uma data futura e qualquer CVC. Pix depende de uma
+   conta Stripe elegível e com o método habilitado.
 
-Nesta fase o pagamento aparece concluído na Stripe, mas o pedido local continua
-`pending`. A confirmação local por webhook, inbox/outbox e worker pertence à
-Fase 3; a URL de sucesso nunca é tratada como prova de pagamento.
+O pagamento aparece concluído na Stripe, o webhook registra o evento de forma
+durável, o relay o publica no RabbitMQ e o consumer aplica a transição: o pedido
+chega a `paid`. A URL de sucesso nunca é tratada como prova de pagamento.
 
 ### Validação executada
 
@@ -99,14 +101,24 @@ como `complete`, com `payment_status=paid`, `amount_total=10000`, moeda `brl` e
 `livemode=false`. Repetir a requisição com a mesma chave devolveu a mesma sessão
 e o PostgreSQL permaneceu com um único `Payment` e um único `PaymentAttempt`.
 
-Como esperado antes da Fase 3, pedido, pagamento e tentativa continuaram
-localmente em `pending`; nenhuma URL de retorno foi usada para alterar estado.
+Naquele momento, antes do consumer existir, pedido, pagamento e tentativa
+continuaram localmente em `pending`. Com a terceira entrega da Fase 3 o mesmo
+evento passa a levar o pedido a `paid`; nenhuma URL de retorno altera estado.
 
 ## Webhooks e transições
 
-O endpoint inicial será `POST /v1/webhooks/stripe`. A implementação deve limitar
-o tamanho do corpo, preservar seus bytes originais e verificar o header
-`Stripe-Signature` com o secret do endpoint antes de desserializar o evento.
+O endpoint é `POST /v1/webhooks/stripe`. Ele limita o tamanho do corpo,
+preserva os bytes originais e verifica o header `Stripe-Signature` com o secret
+do endpoint antes de desserializar o evento. A janela de tolerância padrão do
+SDK rejeita assinaturas antigas, o que impede o replay de uma entrega
+capturada.
+
+A verificação ignora deliberadamente divergências de versão de API. Este
+endpoint apenas registra o evento e nada interpreta o grafo de objetos do
+provedor; uma diferença de versão não pode impedir que um evento autêntico seja
+gravado. A compatibilidade é verificada pelo consumer, quando ele realmente lê a
+sessão: uma versão que o adapter não conhece interrompe o processamento e a
+mensagem vai para a dead-letter, em vez de ser interpretada às cegas.
 
 Eventos necessários:
 
@@ -117,39 +129,52 @@ Eventos necessários:
 | `checkout.session.async_payment_failed` | Mover uma tentativa válida para `failed` |
 | `checkout.session.expired` | Cancelar uma tentativa ainda não concluída, sem regredir um estado final |
 
-O ID do evento da Stripe será a chave externa de deduplicação da inbox. Um
-evento verificado será salvo junto com a outbox em uma única transação; o
-processamento de negócio ocorrerá pelo RabbitMQ. Eventos repetidos ou fora de
-ordem não poderão repetir efeitos nem regredir estados finais.
+Um sucesso que contradiga uma tentativa já `failed`, `expired` ou `cancelled`
+vai para a DLQ. Em particular, a sessão expirada não pode concluir o pagamento
+depois que uma nova tentativa foi liberada. Eventos tardios também não retiram
+um pagamento de `partially_refunded` ou `refunded`; eventos não positivos de
+uma tentativa antiga encerrada são no-op e não interferem na tentativa nova.
 
-Mesmo que cartão costume ter confirmação imediata, o código não deve presumir
-que todo meio de pagamento conclui durante a requisição. Esse limite prepara o
-fluxo para Pix e outros métodos assíncronos.
+O ID do evento da Stripe é a chave externa de deduplicação da inbox. Um evento
+verificado é salvo junto com a outbox em uma única transação e o processamento
+de negócio ocorre pelo RabbitMQ. Eventos repetidos ou fora de ordem não repetem
+efeitos nem regridem estados finais.
+
+Um evento cujo tipo não esteja na tabela acima é registrado como `skipped` e
+não gera mensagem. Isso mantém a trilha de auditoria e avisa quando a Stripe
+passa a enviar algo novo, sem que o evento seja tratado como inválido.
+
+O fluxo automatizado de Pix cobre os dois eventos: uma sessão completa com
+`payment_status=unpaid` move o pagamento para `processing` sem fechar a
+tentativa; `checkout.session.async_payment_succeeded` move tentativa e
+pagamento para `succeeded` e o pedido para `paid`. O caminho assíncrono é
+validado sem presumir que a conclusão do Checkout significa liquidação.
 
 ## Testes de aceitação
 
-### Validados na Fase 2
+### Validados
 
 - Criar um pedido e abrir sua Checkout Session hospedada.
-- Concluir um cartão de teste, observar `paid` na Stripe e manter o pedido local
-  em `pending`.
 - Repetir a criação com a mesma idempotency key sem criar outra sessão.
-
-### Planejados para as Fases 3 e 4
-
+- Rejeitar assinatura ausente, forjada ou fora da janela de tolerância.
+- Aceitar um evento assinado e gravar inbox e outbox na mesma transação.
+- Receber duas vezes o mesmo evento sem criar uma segunda mensagem.
+- Registrar um evento de tipo não tratado sem enfileirá-lo.
 - Concluir um cartão de teste e observar o pedido local chegar a `paid` depois
   do webhook.
-- Rejeitar assinatura ausente ou inválida.
-- Receber duas vezes o mesmo evento sem duplicar efeitos.
 - Receber eventos fora de ordem sem regredir um estado final.
+- Aplicar o mesmo evento duas vezes sem repetir efeitos.
+- Oferecer Pix na Checkout Session e validar `processing` até `paid` quando o
+  evento assíncrono de sucesso chega.
+
+### Planejados para a Fase 4
+
 - Aceitar o webhook de forma durável enquanto RabbitMQ estiver indisponível e
   publicá-lo quando o broker voltar.
 - Encerrar API, relay ou worker em pontos críticos sem perder o evento.
-- Depois do fluxo de cartão estar estável, testar Pix de `processing` até o
-  estado final e o caminho de expiração/falha.
+- Testar no sandbox o caminho de expiração/falha do Pix com dados reproduzíveis.
 
-Quando o endpoint existir, a Stripe CLI poderá encaminhar eventos ao ambiente
-local:
+A Stripe CLI encaminha eventos ao ambiente local:
 
 ```shell
 stripe listen --forward-to localhost:8080/v1/webhooks/stripe

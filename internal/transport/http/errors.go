@@ -10,16 +10,19 @@ import (
 
 // Stable error codes exposed by the contract.
 const (
-	codeInvalidRequest         = "invalid_request"
-	codeUnauthorized           = "unauthorized"
-	codeProductNotFound        = "product_not_found"
-	codeOrderNotFound          = "order_not_found"
-	codeIdempotencyKeyConflict = "idempotency_key_conflict"
-	codeCheckoutInProgress     = "checkout_in_progress"
-	codeOrderNotPayable        = "order_not_payable"
-	codeProviderUnavailable    = "provider_unavailable"
-	codeNotImplemented         = "not_implemented"
-	codeInternalError          = "internal_error"
+	codeInvalidRequest            = "invalid_request"
+	codeUnauthorized              = "unauthorized"
+	codeInvalidSignature          = "invalid_signature"
+	codeProductNotFound           = "product_not_found"
+	codeOrderNotFound             = "order_not_found"
+	codeIdempotencyKeyConflict    = "idempotency_key_conflict"
+	codeCheckoutInProgress        = "checkout_in_progress"
+	codeOrderNotPayable           = "order_not_payable"
+	codeProviderUnavailable       = "provider_unavailable"
+	codeWebhookEventNotFound      = "webhook_event_not_found"
+	codeWebhookEventNotReplayable = "webhook_event_not_replayable"
+	codeNotImplemented            = "not_implemented"
+	codeInternalError             = "internal_error"
 )
 
 // newError builds the common error body, carrying the request correlation id

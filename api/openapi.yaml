@@ -223,6 +223,182 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /v1/webhook-events:
+    get:
+      operationId: listWebhookEvents
+      summary: Lista metadados operacionais da inbox e da outbox.
+      description: |
+        Superficie autenticada para diagnostico. Os payloads do provedor nao
+        sao retornados porque podem conter dados de clientes.
+      tags: [Operations]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/WebhookEventStatus"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Eventos mais recentes, com filtro opcional de status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEventList"
+        "400":
+          description: Filtro ou limite invalido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Chave de integracao ausente ou invalida.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Falha inesperada ao consultar os eventos.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/webhook-events/{webhookEventId}/reprocess:
+    parameters:
+      - $ref: "#/components/parameters/WebhookEventId"
+    post:
+      operationId: reprocessWebhookEvent
+      summary: Reenfileira atomicamente um evento ou publicacao com falha.
+      description: |
+        Apenas trabalho em estado failed pode ser reenfileirado. A operacao
+        reutiliza a linha e o message id originais, zera o budget da tentativa
+        que falhou e registra o replay. Chamadas concorrentes nao criam
+        mensagens duplicadas.
+      tags: [Operations]
+      responses:
+        "202":
+          description: Evento devolvido ao relay do outbox.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEventInspection"
+        "401":
+          description: Chave de integracao ausente ou invalida.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Evento nao encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Evento e publicacao nao estao em estado failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Falha inesperada ao reenfileirar o evento.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/webhooks/stripe:
+    post:
+      operationId: receiveStripeWebhook
+      summary: Recebe um evento assinado pela Stripe.
+      description: |
+        Endpoint destinado a Stripe, nao ao sistema integrador. Nao usa a chave
+        de integracao: a confianca vem da verificacao criptografica do header
+        Stripe-Signature sobre os bytes exatos do corpo.
+
+        ATENCAO ao media type: a Stripe envia Content-Type application/json,
+        mas o contrato declara application/octet-stream de proposito. A
+        assinatura cobre os bytes exatos do corpo, e declarar application/json
+        faria o servidor desserializar e reserializar o conteudo antes da
+        verificacao, mudando ordem de chaves e espacos e invalidando qualquer
+        assinatura legitima. O corpo e tratado como opaco ate ser verificado.
+
+        A consequencia e que ferramentas que validam o media type estritamente
+        podem apontar incompatibilidade entre o enviado e o declarado. O
+        servidor aceita a requisicao normalmente: o Content-Type recebido nao e
+        usado para escolher como ler o corpo.
+
+        A operacao apenas registra o evento de forma duravel e cria, na mesma
+        transacao, a mensagem que sera publicada. Nenhum estado de pagamento
+        muda dentro desta requisicao.
+
+        Cada status e uma instrucao de reentrega para a Stripe: 2xx encerra as
+        tentativas, qualquer outro codigo faz o evento ser reenviado.
+      tags: [Payments]
+      security: []
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: false
+          description: |
+            Assinatura do corpo bruto. Declarado como opcional para que a
+            ausencia seja tratada pelo mesmo caminho de uma assinatura
+            invalida, com o codigo de erro invalid_signature.
+          schema:
+            type: string
+          example: t=1719000000,v1=5257a869e7ecebeda32affa62cdca3fa51cad7e77a0e56ff536d0ce8e108d8bd
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: |
+                Evento JSON assinado pela Stripe, tratado como sequencia opaca
+                de bytes ate que a assinatura seja verificada.
+      responses:
+        "202":
+          description: |
+            Evento novo aceito de forma duravel e enfileirado para
+            processamento assincrono.
+        "200":
+          description: |
+            Nada a fazer: o evento ja havia sido recebido antes, ou e de um
+            tipo que a aplicacao nao trata e foi apenas registrado.
+        "400":
+          description: Assinatura ausente, invalida ou fora da janela de tempo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidSignature:
+                  value:
+                    code: invalid_signature
+                    message: webhook signature could not be verified
+                    correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
+        "500":
+          description: |
+            O evento nao pode ser registrado. Devolvido tambem quando o corpo
+            excede o limite do endpoint, porque nesse caso uma reentrega passa
+            a funcionar depois que o limite for corrigido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                internal:
+                  value:
+                    code: internal_error
+                    message: internal error
+                    correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
 components:
   securitySchemes:
     integrationApiKey:
@@ -253,6 +429,15 @@ components:
         minLength: 1
         maxLength: 255
       example: 8c1f5f2e-9a3b-4c2d-8e7f-1a2b3c4d5e6f
+    WebhookEventId:
+      name: webhookEventId
+      in: path
+      required: true
+      description: Identificador opaco da entrada na inbox.
+      schema:
+        type: string
+        pattern: '^evt_[0-9a-f]{32}$'
+      example: evt_3f2504e04f8911d39a0c0305e82c3301
   schemas:
     HealthResponse:
       type: object
@@ -316,6 +501,82 @@ components:
           type: string
           format: date-time
           description: Instante em que a sessao deixa de aceitar pagamento.
+    WebhookEventStatus:
+      type: string
+      enum: [pending, processing, processed, failed, skipped]
+    OutboxInspection:
+      type: object
+      required: [id, status, attempts, nextAttemptAt]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [pending, publishing, published, failed]
+        attempts:
+          type: integer
+          minimum: 0
+        publishedAt:
+          type: string
+          format: date-time
+        lastError:
+          type: string
+        nextAttemptAt:
+          type: string
+          format: date-time
+    WebhookEventInspection:
+      type: object
+      required:
+        - id
+        - provider
+        - providerEventId
+        - eventType
+        - status
+        - attempts
+        - receivedAt
+        - updatedAt
+        - replayCount
+      properties:
+        id:
+          type: string
+        provider:
+          type: string
+        providerEventId:
+          type: string
+        eventType:
+          type: string
+        status:
+          $ref: "#/components/schemas/WebhookEventStatus"
+        attempts:
+          type: integer
+          minimum: 0
+        receivedAt:
+          type: string
+          format: date-time
+        processedAt:
+          type: string
+          format: date-time
+        lastError:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        replayCount:
+          type: integer
+          minimum: 0
+        lastReplayedAt:
+          type: string
+          format: date-time
+        outbox:
+          $ref: "#/components/schemas/OutboxInspection"
+    WebhookEventList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEventInspection"
     Error:
       type: object
       required: [code, message, correlationId]

@@ -9,7 +9,117 @@ import (
 )
 
 type Querier interface {
+	// Records the provider references on the attempt once an event confirms them.
+	//
+	// The session id is written only when the attempt does not have one yet. An
+	// attempt whose session id already differs is a correlation error the caller
+	// detects before reaching here; this clause makes the write itself incapable
+	// of overwriting a different session.
+	AttachAttemptReferences(ctx context.Context, arg AttachAttemptReferencesParams) (int64, error)
+	GetWebhookEvent(ctx context.Context, id string) (GetWebhookEventRow, error)
+	// Written in the same transaction as the event above.
+	InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) error
+	// Inserting the event is what deduplicates a redelivery: the unique index on
+	// (provider, provider_event_id) turns the second arrival into zero rows, and
+	// the caller learns it must not produce an outbox message.
+	InsertWebhookEvent(ctx context.Context, arg InsertWebhookEventParams) (string, error)
+	// Leases a batch of due messages to one relay instance.
+	//
+	// The transaction around this is short and closes before any network I/O: the
+	// lease, not a held row lock, is what keeps two relays off the same message.
+	// FOR UPDATE SKIP LOCKED still matters, but only to keep two relays from
+	// racing on the claim itself, which takes microseconds.
+	//
+	// A row is due when it is pending past its backoff, or when it was leased and
+	// the holder never settled it before the deadline, which is how a relay that
+	// died releases its work.
+	//
+	// Every instant here comes from now(), never from the caller. PostgreSQL is the
+	// single clock: if instances computed deadlines against their own clocks, a
+	// machine running a few seconds fast would declare another instance's lease
+	// expired while it is still publishing.
+	LeaseOutboxBatch(ctx context.Context, arg LeaseOutboxBatchParams) ([]LeaseOutboxBatchRow, error)
+	// Lists inbox entries without returning either stored payload. Provider
+	// payloads may contain customer data; the operational API exposes only the
+	// metadata needed to diagnose delivery and processing.
+	ListWebhookEvents(ctx context.Context, arg ListWebhookEventsParams) ([]ListWebhookEventsRow, error)
+	// Locks the payment aggregate an event acts upon, in one statement.
+	//
+	// Locking only the inbox row is not enough: two *different* events of the same
+	// payment can be processed at once, read the same initial state and apply
+	// incompatible transitions. The join takes the attempt, its payment and the
+	// payment's order together, so events of one payment are serialized against
+	// each other.
+	//
+	// The rows are locked in a fixed order — attempt, payment, order — because two
+	// transactions taking the same locks in different orders would deadlock. The
+	// ORDER BY is what pins that order for the row-level locks PostgreSQL acquires
+	// while executing the join.
+	//
+	// The join itself is the correlation check: a row comes back only when the
+	// attempt really belongs to that payment and the payment to that order. A
+	// mismatch returns nothing, which the caller reports as an inconsistent
+	// reference rather than a missing row.
+	LockPaymentAggregate(ctx context.Context, arg LockPaymentAggregateParams) (LockPaymentAggregateRow, error)
+	// Locks the inbox entry the message refers to.
+	//
+	// This is the first lock of the transaction and the one that serializes two
+	// deliveries of the same event: a redelivery, or the relay republishing after
+	// a lease was lost. The second arrival blocks here until the first commits and
+	// then reads status = 'processed', which is what turns it into a no-op.
+	//
+	// The lock is blocking, not SKIP LOCKED. Skipping would mean acknowledging a
+	// message whose effect nobody applied, and if the transaction holding the row
+	// then rolled back the effect would be lost entirely.
+	LockWebhookEvent(ctx context.Context, id string) (LockWebhookEventRow, error)
+	// Both rows are locked before replay eligibility is checked. Concurrent
+	// requests therefore cannot count or enqueue the same replay twice.
+	LockWebhookEventForReplay(ctx context.Context, id string) (LockWebhookEventForReplayRow, error)
+	// Marks an order paid. Only a pending order moves, so a late event can never
+	// revive one that was cancelled or expired.
+	MarkOrderPaid(ctx context.Context, id string) (int64, error)
+	// Stops retrying a message the relay can never publish, such as one whose
+	// payload cannot be encoded. Reserved for errors classified as permanent;
+	// broker unavailability must never land here.
+	MarkOutboxFailed(ctx context.Context, arg MarkOutboxFailedParams) (int64, error)
+	// Only ever called after the broker confirmed the publication.
+	//
+	// The lease must still be ours: locked_by identifies this exact process, and
+	// locked_until must not have passed, or another relay may already have taken
+	// the message over. Returning the row count is what lets the caller notice a
+	// lost lease instead of reporting a publication that was never recorded.
+	MarkOutboxPublished(ctx context.Context, arg MarkOutboxPublishedParams) (int64, error)
+	// Returns the message to the pool with a backoff deadline. Transient failures
+	// never exhaust a budget; they simply wait longer before the next attempt.
+	MarkOutboxRetryable(ctx context.Context, arg MarkOutboxRetryableParams) (int64, error)
+	// Closes an inbox entry that produced its effect, or that was deliberately a
+	// no-op. Both are processed: the event has been dealt with and must never be
+	// applied again.
+	MarkWebhookEventProcessed(ctx context.Context, arg MarkWebhookEventProcessedParams) (int64, error)
+	// Operational visibility: how much work is waiting and how old it is.
+	OutboxBacklog(ctx context.Context) (OutboxBacklogRow, error)
 	Ping(ctx context.Context) (int32, error)
+	// Records a failed attempt and atomically decides whether the inbox entry stays
+	// pending or is closed. The same statement that increments attempts compares
+	// the resulting value with the budget; doing that later in the service could
+	// publish the message to the DLQ while leaving this row pending.
+	RecordWebhookEventFailure(ctx context.Context, arg RecordWebhookEventFailureParams) (RecordWebhookEventFailureRow, error)
+	// Reuse the original outbox message instead of creating a second row. The
+	// inbox makes a repeated broker delivery harmless, while keeping one message
+	// id per provider event makes replay auditable and deterministic.
+	ResetOutboxForReplay(ctx context.Context, webhookEventID string) (int64, error)
+	ResetWebhookEventForReplay(ctx context.Context, id string) (int64, error)
+	// Moves a payment, refusing to leave a terminal financial state.
+	TransitionPayment(ctx context.Context, arg TransitionPaymentParams) (int64, error)
+	// Moves an attempt, refusing to leave a settled state.
+	//
+	// The WHERE clause is the second line of defence. The transition matrix has
+	// already approved this write against state read under the lock, so this can
+	// only fail if the matrix and the schema disagree — and the caller treats zero
+	// rows during an approved transition as a violated invariant, not a no-op.
+	TransitionPaymentAttempt(ctx context.Context, arg TransitionPaymentAttemptParams) (int64, error)
+	// Operational visibility: how many events are waiting or stuck.
+	WebhookInboxBacklog(ctx context.Context) (WebhookInboxBacklogRow, error)
 }
 
 var _ Querier = (*Queries)(nil)
