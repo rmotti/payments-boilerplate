@@ -57,7 +57,7 @@ múltiplos provedores.
 - [x] Validar assinatura usando o corpo bruto da requisição.
 - [x] Persistir inbox e outbox na mesma transação.
 - [x] Deduplicar entregas.
-- [ ] Publicar mensagens persistentes com publisher confirms.
+- [x] Publicar mensagens persistentes com publisher confirms.
 - [ ] Consumir com ack manual e concorrência limitada.
 - [ ] Implementar retry com backoff e dead-letter queue.
 - [ ] Impedir regressões inválidas de estado.

@@ -11,7 +11,14 @@ import (
 
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
+	outboxapp "github.com/rmotti/payments-boilerplate/internal/application/outbox"
 )
+
+// PublishAttemptBudget is the ceiling one publish attempt may take, including
+// redialing the broker. It lives here, rather than being imported from the
+// adapter, because configuration must not depend on adapters; a test asserts
+// the two stay equal.
+const PublishAttemptBudget = 5 * time.Second
 
 // Config contains all process configuration loaded from environment variables.
 type Config struct {
@@ -27,6 +34,20 @@ type Config struct {
 	DatabaseConnectionMaxLifetime time.Duration `env:"DATABASE_CONNECTION_MAX_LIFETIME" envDefault:"30m"`
 
 	RabbitMQURL string `env:"RABBITMQ_URL"`
+
+	// Relay tuning. The defaults suit a single worker on a small deployment;
+	// they exist as configuration because the right values depend on volume.
+	OutboxBatchSize int           `env:"OUTBOX_BATCH_SIZE" envDefault:"20"`
+	OutboxInterval  time.Duration `env:"OUTBOX_INTERVAL" envDefault:"1s"`
+	// OutboxLeaseDuration must comfortably exceed the time to publish a whole
+	// batch: a lease that expires mid-publish lets another instance take the
+	// same message, which is safe but wasteful.
+	OutboxLeaseDuration time.Duration `env:"OUTBOX_LEASE_DURATION" envDefault:"2m"`
+	OutboxBackoffBase   time.Duration `env:"OUTBOX_BACKOFF_BASE" envDefault:"2s"`
+	OutboxBackoffMax    time.Duration `env:"OUTBOX_BACKOFF_MAX" envDefault:"5m"`
+	// OutboxAlertAfterAttempts only controls when a struggling message is
+	// reported. It never stops the retries: only a permanent failure does.
+	OutboxAlertAfterAttempts int `env:"OUTBOX_ALERT_AFTER_ATTEMPTS" envDefault:"10"`
 
 	IntegrationAPIKeys []string `env:"INTEGRATION_API_KEYS"`
 
@@ -86,6 +107,31 @@ func Load(serviceName, defaultHTTPAddress string, requireRabbitMQ bool) (Config,
 	}
 	if cfg.StartupTimeout <= 0 || cfg.ShutdownTimeout <= 0 {
 		return Config{}, errors.New("startup and shutdown timeouts must be positive")
+	}
+	if cfg.OutboxBatchSize < 1 {
+		return Config{}, errors.New("OUTBOX_BATCH_SIZE must be positive")
+	}
+	if cfg.OutboxInterval <= 0 {
+		return Config{}, errors.New("OUTBOX_INTERVAL must be positive")
+	}
+	if cfg.OutboxAlertAfterAttempts < 1 {
+		return Config{}, errors.New("OUTBOX_ALERT_AFTER_ATTEMPTS must be positive")
+	}
+	if cfg.OutboxBackoffBase <= 0 || cfg.OutboxBackoffMax <= 0 {
+		return Config{}, errors.New("outbox backoff durations must be positive")
+	}
+	if cfg.OutboxBackoffMax < cfg.OutboxBackoffBase {
+		return Config{}, errors.New("OUTBOX_BACKOFF_MAX must not be smaller than OUTBOX_BACKOFF_BASE")
+	}
+	// A lease shorter than the worst-case time to publish a whole batch would
+	// expire while the relay is still working through it. The publisher bounds
+	// each attempt. A final reserve is left for recording the outcome in
+	// PostgreSQL after the publication window closes.
+	minimumLease := time.Duration(cfg.OutboxBatchSize)*PublishAttemptBudget + outboxapp.SettlementReserve
+	if cfg.OutboxLeaseDuration < minimumLease {
+		return Config{}, fmt.Errorf(
+			"OUTBOX_LEASE_DURATION must be at least OUTBOX_BATCH_SIZE x %s + %s settlement reserve (%s)",
+			PublishAttemptBudget, outboxapp.SettlementReserve, minimumLease)
 	}
 	if cfg.OTelEnabled && cfg.OTelExporterEndpoint == "" {
 		return Config{}, errors.New("OTEL_EXPORTER_OTLP_ENDPOINT is required when telemetry is enabled")

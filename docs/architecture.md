@@ -4,8 +4,8 @@ Este documento descreve as fronteiras e invariantes da API em Go e distingue o
 runtime atual da arquitetura-alvo da versão `0.1.0`. A API usa PostgreSQL como
 fonte de verdade, abre Stripe Checkout e já recebe webhooks assinados,
 gravando o evento e sua mensagem de outbox na mesma transação. O relay que
-publica essas mensagens e o consumo assíncrono ainda pertencem à Fase 3, e o
-processo `worker` continua apenas verificando PostgreSQL e RabbitMQ.
+publica essas mensagens já roda dentro do processo `worker`. O consumo
+assíncrono ainda pertence à Fase 3.
 
 ## Contexto
 
@@ -45,8 +45,8 @@ exercita o contrato, mas não faz parte do fluxo de produção de quem adotar o
 projeto.
 
 A API persiste o webhook e uma mensagem de outbox na mesma transação. O relay
-publicará a mensagem no RabbitMQ e o worker aplicará seus efeitos de forma
-idempotente; essas duas etapas ainda pertencem à Fase 3. API, relay e consumer
+publica a mensagem no RabbitMQ, e o consumer aplicará seus efeitos de forma
+idempotente; essa última etapa ainda pertence à Fase 3. API, relay e consumer
 pertencem ao mesmo código-base.
 
 ## Responsabilidades
@@ -62,17 +62,31 @@ pertencem ao mesmo código-base.
 - Expor ao sistema integrador o estado conhecido pela API.
 - Publicar um contrato OpenAPI coerente com a implementação.
 
-### Outbox relay — Fase 3
+### Outbox relay
 
-- Buscar mensagens de outbox ainda não publicadas.
-- Publicá-las como persistentes no RabbitMQ.
-- Aguardar publisher confirm antes de marcar a publicação como concluída.
-- Repetir publicações que falharem sem perder a mensagem original.
+Executa dentro do processo `worker`, como componente independente do consumer.
+Responsabilidade separada não implica processo separado; o
+[ADR 0012](decisions/0012-outbox-relay-and-topology.md) registra a decisão e o
+caminho de extração para um binário próprio.
 
-### Payments worker — Fase 3
+- Reservar mensagens vencidas com um lease, em transação curta, para que várias
+  instâncias de worker coexistam sem coordenação externa.
+- Publicá-las como persistentes no RabbitMQ, sem manter transação aberta durante
+  a chamada ao broker.
+- Aguardar publisher confirm, e publicar com `mandatory`, antes de marcar a
+  publicação como concluída: um confirm sozinho não prova que alguma fila
+  recebeu a mensagem.
+- Manter um deadline no transporte durante toda a tentativa e encerrar a janela
+  de publicação antes do lease, reservando tempo para gravar seu desfecho.
+- Reagendar com backoff e jitter as publicações que falharem, sem nunca
+  descartar a mensagem por indisponibilidade do broker.
+- Abandonar apenas mensagens cujo erro seja classificado como permanente, e
+  reportar as que insistirem em falhar sem interromper as tentativas.
 
-O binário atual conecta as dependências e serve health, mas ainda não consome
-mensagens. Sua responsabilidade-alvo é:
+### Payments worker — consumo na Fase 3
+
+O binário hospeda o relay do outbox e serve health. O consumo de mensagens ainda
+não existe; sua responsabilidade-alvo é:
 
 - Consumir mensagens com confirmação manual.
 - Aplicar transições de estado válidas e idempotentes.
@@ -80,7 +94,7 @@ mensagens. Sua responsabilidade-alvo é:
 - Aplicar retry com backoff para falhas transitórias.
 - Encaminhar falhas definitivas para uma dead-letter queue.
 
-### RabbitMQ — uso financeiro na Fase 3
+### RabbitMQ — uso financeiro
 
 - Manter filas duráveis e mensagens persistentes.
 - Entregar mensagens novamente quando um consumer falhar antes do ack.
@@ -170,7 +184,7 @@ erro suficiente para reprocessamento seguro.
 
 Registra a intenção de publicar uma mensagem. É criado na mesma transação que o
 `WebhookEvent` e só será marcado como publicado após a confirmação do RabbitMQ,
-o que pertence ao relay da Fase 3. Uma publicação poderá se repetir, portanto o
+o que o relay faz. Uma publicação poderá se repetir, portanto o
 consumidor precisa ser idempotente.
 
 A linha não guarda o payload do provedor. A mensagem publicada carrega apenas
@@ -198,9 +212,10 @@ primeira versão.
 
 ## Invariantes
 
-As invariantes de pedido, preço, checkout, idempotência, recepção de webhook e
-gravação atômica da inbox com a outbox já são executáveis. As que mencionam
-publicação no broker e consumo descrevem o restante da Fase 3.
+As invariantes de pedido, preço, checkout, idempotência, recepção de webhook,
+gravação atômica da inbox com a outbox e
+publicação com publisher confirm já são executáveis. As que mencionam consumo
+descrevem o restante da Fase 3.
 
 - Dinheiro é representado por inteiro na menor unidade e código de moeda.
 - Valor e moeda tornam-se imutáveis quando o checkout é iniciado.
@@ -239,6 +254,7 @@ internal/
     webhooks/
   application/
     orders/
+    outbox/
     payments/
     webhooks/
   adapters/
@@ -317,8 +333,8 @@ provedores.
 
 PostgreSQL e RabbitMQ não compartilham uma transação. Publicar diretamente no
 broker depois de salvar o webhook criaria uma janela de perda entre as duas
-operações. O transactional outbox fecha essa janela; a gravação abaixo já é
-executável, e o relay entra no restante da Fase 3:
+operações. O transactional outbox fecha essa janela, e as duas etapas abaixo já são
+executáveis:
 
 ```text
 BEGIN
@@ -333,20 +349,31 @@ Se o relay cair depois do confirm e antes de marcar o registro, a mensagem será
 publicada novamente. Por isso a garantia do sistema é entrega pelo menos uma vez
 com efeitos idempotentes, e não entrega exatamente uma vez.
 
-## Topologia inicial do RabbitMQ — Fase 3
+## Topologia do RabbitMQ
 
 ```text
-payments.events exchange
+payments.events (topic, durável)
   |
-  +-- payment.webhook.* -> payments.webhooks queue
+  +-- payment.webhook.#  -> payments.webhooks (durável)
                               |
                               +-- falha transitória -> retry com backoff
-                              `-- tentativas esgotadas -> payments.webhooks.dlq
+                              `-- rejeição definitiva -> payments.webhooks.dlx
+                                                          |
+                                                          `-> payments.webhooks.dlq
 ```
 
-Exchange, filas e mensagens devem ser duráveis. O consumer usa ack manual e um
-prefetch baixo e configurável. A topologia será declarada pela aplicação de
-forma idempotente.
+O binding usa `#`, e não `*`. As routing keys carregam o tipo de domínio, como
+`payment.webhook.checkout.completed`, e em uma exchange topic o `*` casa
+exatamente uma palavra entre pontos: usá-lo descartaria silenciosamente toda
+chave com mais de um segmento após o prefixo.
+
+Exchange, filas e mensagens são duráveis, e a topologia é declarada pela
+aplicação de forma idempotente na inicialização do worker. A dead-letter é
+declarada junto, antes de existir consumer, porque os argumentos de uma fila são
+imutáveis no RabbitMQ: adicioná-los depois exigiria apagar e recriar uma fila que
+já carrega mensagens financeiras.
+
+O consumer usará ack manual e um prefetch baixo e configurável.
 
 ## Superfície HTTP
 

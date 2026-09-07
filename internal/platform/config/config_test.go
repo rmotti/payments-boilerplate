@@ -47,6 +47,21 @@ func TestLoadParsesIntegrationAPIKeys(t *testing.T) {
 	}
 }
 
+func TestLoadRequiresLeaseToIncludeSettlementReserve(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("OUTBOX_BATCH_SIZE", "20")
+	t.Setenv("OUTBOX_LEASE_DURATION", "100s")
+
+	if _, err := Load("test-worker", ":8001", false); err == nil {
+		t.Fatal("Load() error = nil, want a lease without settlement reserve to be rejected")
+	}
+
+	t.Setenv("OUTBOX_LEASE_DURATION", "105s")
+	if _, err := Load("test-worker", ":8001", false); err != nil {
+		t.Fatalf("Load() with publish budget and settlement reserve error = %v", err)
+	}
+}
+
 func TestValidateStripe(t *testing.T) {
 	t.Parallel()
 

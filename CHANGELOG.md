@@ -37,6 +37,36 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   de copiar o payload da Stripe. Testes de integração cobrem o rollback da
   inbox quando a outbox falha, entregas concorrentes do mesmo evento e a
   unicidade imposta pelo próprio schema.
+- Relay do outbox executando dentro do `worker`. Ele reserva lotes por lease em
+  transações curtas, publica sem manter transação aberta durante a chamada ao
+  broker e só marca uma mensagem como publicada após o publisher confirm. Mais
+  de uma instância de worker é segura sem coordenação externa, e um relay que
+  morre devolve seu trabalho quando o lease expira.
+- Publicação `mandatory`, para que uma mensagem que nenhuma fila recebeu seja
+  reportada em vez de contar como publicada apesar do confirm.
+- Política de falhas do relay: indisponibilidade do broker, timeout, confirm
+  negativo e mensagem não roteada são transitórios e reagendados com backoff
+  exponencial e jitter, sem nunca descartar a mensagem. Apenas erros
+  classificados como permanentes abandonam uma mensagem, e o limite de
+  tentativas apenas dispara alerta.
+- Reconexão AMQP sob demanda, com prazo de socket cobrindo rediscagem,
+  handshake, RPCs de preparação, envio e espera do confirm. O driver não
+  interrompe todas essas operações apenas com o cancelamento do `context`, por
+  isso o limite permanece instalado no transporte durante a tentativa inteira.
+  O worker também passa a subir com o broker indisponível, já que as mensagens
+  estão duráveis no PostgreSQL.
+- Prazos do lease calculados pelo PostgreSQL, que é o único relógio
+  compartilhado entre instâncias, e dono do lease identificando o processo e
+  não a máquina, para que dois workers no mesmo host não colidam. Uma janela
+  monotônica local, iniciada antes do lease, limita a publicação sem comparar o
+  relógio absoluto do banco com o relógio do worker e reserva tempo para a
+  liquidação.
+- Perda de lease detectada e reportada em vez de contabilizada como sucesso,
+  já que a mensagem será publicada novamente por outra instância.
+- Topologia do RabbitMQ declarada de forma idempotente pela aplicação, com
+  exchange `payments.events`, fila durável `payments.webhooks` e dead-letter
+  criada desde o início, já que argumentos de fila são imutáveis.
+- Decisão de execução do relay e da topologia do broker, registrada no ADR 0012.
 - Decisão de recepção de webhooks da Fase 3: contrato de resposta por
   situação, que define quando o provedor deve reentregar, e mensagem de
   outbox por referência ao evento, sem copiar o payload do provedor.

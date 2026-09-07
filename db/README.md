@@ -209,7 +209,18 @@ Webhook do provedor
   COMMIT
   -> resposta 2xx ao provedor
 
-Fase 3: relay e worker
+Relay do outbox
+  BEGIN
+    UPDATE outbox_events             status publishing, locked_until, locked_by
+                                     (FOR UPDATE SKIP LOCKED na selecao)
+  COMMIT
+  -> publica no RabbitMQ e aguarda o publisher confirm
+  BEGIN
+    UPDATE outbox_events             status published, published_at
+                                     ou next_attempt_at com backoff
+  COMMIT
+
+Fase 3: consumer
   UPDATE payment_attempts            resultado da tentativa
   UPDATE payments                    estado financeiro consolidado
   UPDATE orders                      status paid, na mesma transacao
@@ -234,6 +245,28 @@ copia canonica. As razoes estao no ADR 0011.
 
 O indice parcial sobre linhas nao publicadas existe para o relay varrer apenas
 o que falta publicar, sem caminhar sobre historico.
+
+O relay trabalha por lease, nao por lock mantido. Uma transacao curta seleciona
+mensagens vencidas com `FOR UPDATE SKIP LOCKED`, marca `publishing` e grava
+`locked_until` e `locked_by`; a publicacao acontece sem transacao aberta; outra
+transacao curta grava o desfecho. Nenhum lock existe durante I/O de rede.
+
+Enquanto o lease vale, outra instancia nao recebe a mensagem. Nao ha renovacao:
+quando o prazo passa sem liquidacao, ela volta ao conjunto de trabalho, que e
+como um relay morto devolve o que estava fazendo.
+
+Os prazos persistidos sao calculados por `now()` no banco, nunca pelos
+processos: com varias instancias, o PostgreSQL e o unico relogio compartilhado.
+Para interromper a publicacao, o worker usa uma janela monotônica conservadora
+iniciada antes de pedir o lease, sem interpretar o timestamp do banco com seu
+proprio relogio. O `locked_by` identifica o processo, com sufixo aleatorio, e
+nao apenas a maquina. A liquidacao exige lease vigente e do proprio dono;
+quando nenhuma linha e atualizada, isso e reportado como lease perdido em vez
+de sucesso.
+
+Uma linha so vira `published` depois do publisher confirm do broker. Falhas
+transitorias reagendam `next_attempt_at` com backoff e jitter, e nunca descartam
+a mensagem. Apenas um erro classificado como permanente leva a `failed`.
 
 ## Ainda nao modelado
 

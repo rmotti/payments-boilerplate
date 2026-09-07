@@ -25,7 +25,7 @@ ficam em [docs/roadmap.md](docs/roadmap.md), que é a fonte de verdade.
 | Fase 0 — Definições de fundação | Concluída | Visão, limites, decisões técnicas e convenções |
 | Fase 1 — Fundação executável | Concluída | API, banco, migrations, observabilidade, CI e deploy documentado |
 | Fase 2 — Primeiro pagamento vertical | Concluída | API key, pedido idempotente, consulta e Stripe Checkout em BRL |
-| Fase 3 — Confirmação assíncrona confiável | Em andamento | Webhook assinado e inbox/outbox entregues; relay, worker e Pix pendentes |
+| Fase 3 — Confirmação assíncrona confiável | Em andamento | Webhook, inbox/outbox e relay entregues; consumer, DLQ e Pix pendentes |
 | Fase 4 — Qualidade para publicação | Planejada | Hardening, testes de falha, métricas e guias operacionais |
 
 Hoje o pagamento pode terminar como `paid` na Stripe, mas pedido, pagamento e
@@ -68,9 +68,9 @@ make run-api
 make run-worker
 ```
 
-Neste momento o processo `worker` conecta PostgreSQL e RabbitMQ e publica seu
-healthcheck, mas ainda não consome mensagens. O relay e o consumer entram no
-restante da Fase 3.
+Neste momento o processo `worker` publica seu healthcheck e executa o relay do
+outbox, que declara a topologia do RabbitMQ e publica as mensagens gravadas pela
+API. O consumer entra no restante da Fase 3.
 
 A API fica disponível em `http://localhost:8080`, a documentação em
 `http://localhost:8080/docs/` e o painel local do RabbitMQ em
@@ -119,10 +119,10 @@ curl --fail --show-error \
   -H "X-API-Key: $API_KEY"
 ```
 
-O pagamento é concluído na Stripe e o webhook já registra o evento de forma
-durável, mas o pedido local permanece `pending`: a publicação no RabbitMQ e o
-worker que aplica a transição ainda serão implementados. A página de retorno
-nunca confirma pagamento.
+O pagamento é concluído na Stripe, o webhook registra o evento de forma durável
+e o relay publica a mensagem no RabbitMQ, mas o pedido local permanece
+`pending`: o consumer que aplica a transição ainda será implementado. A página
+de retorno nunca confirma pagamento.
 
 Para incluir o ambiente de observabilidade:
 

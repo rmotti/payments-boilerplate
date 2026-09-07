@@ -64,6 +64,9 @@ Crie outro serviço a partir do mesmo repositório e nomeie-o `worker`.
 Configure:
 
 - start command: `/app/worker`;
+- variáveis do relay do outbox, caso queira ajustar os padrões:
+  `OUTBOX_BATCH_SIZE`, `OUTBOX_INTERVAL`, `OUTBOX_LEASE_DURATION`,
+  `OUTBOX_BACKOFF_BASE`, `OUTBOX_BACKOFF_MAX` e `OUTBOX_ALERT_AFTER_ATTEMPTS`;
 - healthcheck path: `/health`;
 - nenhum domínio público;
 - Wait for CI habilitado.

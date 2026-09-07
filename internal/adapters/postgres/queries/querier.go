@@ -15,6 +15,38 @@ type Querier interface {
 	// (provider, provider_event_id) turns the second arrival into zero rows, and
 	// the caller learns it must not produce an outbox message.
 	InsertWebhookEvent(ctx context.Context, arg InsertWebhookEventParams) (string, error)
+	// Leases a batch of due messages to one relay instance.
+	//
+	// The transaction around this is short and closes before any network I/O: the
+	// lease, not a held row lock, is what keeps two relays off the same message.
+	// FOR UPDATE SKIP LOCKED still matters, but only to keep two relays from
+	// racing on the claim itself, which takes microseconds.
+	//
+	// A row is due when it is pending past its backoff, or when it was leased and
+	// the holder never settled it before the deadline, which is how a relay that
+	// died releases its work.
+	//
+	// Every instant here comes from now(), never from the caller. PostgreSQL is the
+	// single clock: if instances computed deadlines against their own clocks, a
+	// machine running a few seconds fast would declare another instance's lease
+	// expired while it is still publishing.
+	LeaseOutboxBatch(ctx context.Context, arg LeaseOutboxBatchParams) ([]LeaseOutboxBatchRow, error)
+	// Stops retrying a message the relay can never publish, such as one whose
+	// payload cannot be encoded. Reserved for errors classified as permanent;
+	// broker unavailability must never land here.
+	MarkOutboxFailed(ctx context.Context, arg MarkOutboxFailedParams) (int64, error)
+	// Only ever called after the broker confirmed the publication.
+	//
+	// The lease must still be ours: locked_by identifies this exact process, and
+	// locked_until must not have passed, or another relay may already have taken
+	// the message over. Returning the row count is what lets the caller notice a
+	// lost lease instead of reporting a publication that was never recorded.
+	MarkOutboxPublished(ctx context.Context, arg MarkOutboxPublishedParams) (int64, error)
+	// Returns the message to the pool with a backoff deadline. Transient failures
+	// never exhaust a budget; they simply wait longer before the next attempt.
+	MarkOutboxRetryable(ctx context.Context, arg MarkOutboxRetryableParams) (int64, error)
+	// Operational visibility: how much work is waiting and how old it is.
+	OutboxBacklog(ctx context.Context) (OutboxBacklogRow, error)
 	Ping(ctx context.Context) (int32, error)
 }
 

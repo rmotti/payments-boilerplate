@@ -36,6 +36,9 @@ type OutboxEvent struct {
 	LastError      sql.NullString
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	LockedUntil    sql.NullTime
+	LockedBy       sql.NullString
+	NextAttemptAt  time.Time
 }
 
 type Payment struct {
