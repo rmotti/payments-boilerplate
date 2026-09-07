@@ -18,6 +18,9 @@ var (
 	// ErrIdempotencyKeyConflict is returned by a Repository when another order
 	// already owns the idempotency key.
 	ErrIdempotencyKeyConflict = errors.New("idempotency key already used")
+
+	// ErrOrderNotFound is returned when the requested order does not exist.
+	ErrOrderNotFound = errors.New("order not found")
 )
 
 // Catalog resolves the products the server knows how to price.
@@ -27,7 +30,8 @@ type Catalog interface {
 
 // Repository persists orders.
 type Repository interface {
-	Create(ctx context.Context, order domain.Order) error
+	CreateOrGet(ctx context.Context, order domain.Order) (persisted domain.Order, created bool, err error)
+	Get(ctx context.Context, id string) (domain.Order, error)
 }
 
 // CreateInput is what a client is allowed to say about a new order. It carries
@@ -107,8 +111,24 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (domain.Order, err
 		return domain.Order{}, err
 	}
 
-	if err := s.repository.Create(ctx, order); err != nil {
+	persisted, created, err := s.repository.CreateOrGet(ctx, order)
+	if err != nil {
 		return domain.Order{}, fmt.Errorf("persist order: %w", err)
+	}
+	if !created && (persisted.ProductID != in.ProductID || persisted.Quantity != in.Quantity) {
+		return domain.Order{}, ErrIdempotencyKeyConflict
+	}
+	return persisted, nil
+}
+
+// Get returns the current local state of an order.
+func (s *Service) Get(ctx context.Context, id string) (domain.Order, error) {
+	if err := domain.ValidateID(id); err != nil {
+		return domain.Order{}, ErrOrderNotFound
+	}
+	order, err := s.repository.Get(ctx, id)
+	if err != nil {
+		return domain.Order{}, fmt.Errorf("get order: %w", err)
 	}
 	return order, nil
 }

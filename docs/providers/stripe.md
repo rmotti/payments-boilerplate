@@ -39,12 +39,12 @@ Não fazem parte deste adapter na versão `0.1`:
 
 ## Configuração
 
-A implementação deverá ler as configurações do ambiente:
+A implementação lê as configurações do ambiente:
 
 | Variável | Finalidade |
 | --- | --- |
 | `STRIPE_SECRET_KEY` | Autenticar chamadas do backend à API da Stripe |
-| `STRIPE_WEBHOOK_SECRET` | Verificar assinaturas do endpoint de webhook |
+| `STRIPE_WEBHOOK_SECRET` | Verificar assinaturas do endpoint de webhook na Fase 3 |
 | `STRIPE_SUCCESS_URL` | Retorno do consumidor após o Checkout |
 | `STRIPE_CANCEL_URL` | Retorno quando o consumidor cancela o Checkout |
 
@@ -54,8 +54,7 @@ provedor.
 
 ## Criação do Checkout
 
-Para cada `PaymentAttempt`, o adapter cria uma nova Checkout Session. A chamada
-deve:
+Para cada `PaymentAttempt`, o adapter cria uma nova Checkout Session. A chamada:
 
 1. usar `mode=payment` e a interface hospedada;
 2. obter valor, moeda e descrição do pedido persistido;
@@ -64,8 +63,44 @@ deve:
 4. usar uma chave de idempotência estável para a tentativa local;
 5. persistir o ID da sessão, sua URL e expiração antes de responder ao cliente.
 
-A mesma chave é reutilizada ao repetir a mesma tentativa após timeout. Uma nova
-tentativa de pagamento recebe uma nova chave e uma nova Checkout Session.
+A reserva local permanece ativa se a chamada ao provedor falhar ou expirar por
+timeout. O cliente deve retomar a operação com a mesma `Idempotency-Key`;
+enquanto a tentativa estiver ativa, uma chave diferente é bloqueada para evitar
+cobranças concorrentes. As transições de falha e expiração, assim como a
+liberação segura de uma nova tentativa, serão implementadas na Fase 3.
+
+O SDK oficial está fixado na série major `v86`. A aplicação depende de uma
+interface própria e pequena; somente o adapter importa os tipos da Stripe. A
+reserva de `Payment` e `PaymentAttempt` ocorre em uma transação local antes da
+chamada externa. Se a resposta da Stripe chegar e a gravação local falhar, a
+mesma `Idempotency-Key` recupera a sessão remota com segurança na tentativa
+seguinte.
+
+## Primeiro checkout em sandbox
+
+1. Copie a chave secreta de teste (`sk_test_...`) do Dashboard para
+   `STRIPE_SECRET_KEY` no `.env`.
+2. Configure `STRIPE_SUCCESS_URL` e `STRIPE_CANCEL_URL`. Para o teste local, os
+   valores da `.env.example` retornam à documentação da API.
+3. Inicie PostgreSQL, migrations e API; crie um pedido e abra o checkout com os
+   comandos do README.
+4. Abra `checkoutUrl` e use o cartão de teste `4242 4242 4242 4242`, uma data
+   futura e qualquer CVC.
+
+Nesta fase o pagamento aparece concluído na Stripe, mas o pedido local continua
+`pending`. A confirmação local por webhook, inbox/outbox e worker pertence à
+Fase 3; a URL de sucesso nunca é tratada como prova de pagamento.
+
+### Validação executada
+
+Em 7 de setembro de 2026, o fluxo foi validado de ponta a ponta no sandbox com
+o produto de demonstração de R$ 100,00. A Stripe confirmou a Checkout Session
+como `complete`, com `payment_status=paid`, `amount_total=10000`, moeda `brl` e
+`livemode=false`. Repetir a requisição com a mesma chave devolveu a mesma sessão
+e o PostgreSQL permaneceu com um único `Payment` e um único `PaymentAttempt`.
+
+Como esperado antes da Fase 3, pedido, pagamento e tentativa continuaram
+localmente em `pending`; nenhuma URL de retorno foi usada para alterar estado.
 
 ## Webhooks e transições
 

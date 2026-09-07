@@ -42,13 +42,13 @@ múltiplos provedores.
 - [x] Criar pedido com valor calculado no servidor.
 - [x] Definir o modelo de acesso às rotas e documentar quais operações
   permanecem públicas.
-- [ ] Proteger criação, checkout e consulta com autenticação da integração e
+- [x] Proteger criação, checkout e consulta com autenticação da integração e
   autorização sobre o pedido.
-- [ ] Integrar Stripe Checkout hospedado em sandbox com cartão em BRL.
-- [ ] Implementar idempotência da criação.
-- [ ] Relacionar a sessão da Stripe ao pedido e à tentativa locais.
-- [ ] Implementar consulta do estado local do pedido.
-- [ ] Documentar configuração e executar o primeiro pagamento de teste.
+- [x] Integrar Stripe Checkout hospedado em sandbox com cartão em BRL.
+- [x] Implementar idempotência da criação.
+- [x] Relacionar a sessão da Stripe ao pedido e à tentativa locais.
+- [x] Implementar consulta do estado local do pedido.
+- [x] Documentar configuração e executar o primeiro pagamento de teste.
 
 ## Fase 3 — Confirmação assíncrona confiável
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	app "github.com/rmotti/payments-boilerplate/internal/application/orders"
+	paymentapp "github.com/rmotti/payments-boilerplate/internal/application/payments"
 	domain "github.com/rmotti/payments-boilerplate/internal/domain/orders"
 	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/transport/http/openapi"
@@ -23,7 +24,7 @@ func TestGetHealthReady(t *testing.T) {
 
 	handler := NewAPIHandler(health.New("payments-api", "test", map[string]health.Checker{
 		"postgres": func(context.Context) error { return nil },
-	}), nil)
+	}), nil, nil)
 
 	response, err := handler.GetHealth(context.Background(), openapi.GetHealthRequestObject{})
 	if err != nil {
@@ -43,7 +44,7 @@ func TestGetHealthUnavailable(t *testing.T) {
 
 	handler := NewAPIHandler(health.New("payments-worker", "test", map[string]health.Checker{
 		"rabbitmq": func(context.Context) error { return errors.New("unavailable") },
-	}), nil)
+	}), nil, nil)
 
 	response, err := handler.GetHealth(context.Background(), openapi.GetHealthRequestObject{})
 	if err != nil {
@@ -64,10 +65,20 @@ type stubOrders struct {
 	order domain.Order
 	err   error
 	got   app.CreateInput
+	calls int
 }
 
 func (s *stubOrders) Create(_ context.Context, in app.CreateInput) (domain.Order, error) {
+	s.calls++
 	s.got = in
+	if s.err != nil {
+		return domain.Order{}, s.err
+	}
+	return s.order, nil
+}
+
+func (s *stubOrders) Get(_ context.Context, _ string) (domain.Order, error) {
+	s.calls++
 	if s.err != nil {
 		return domain.Order{}, s.err
 	}
@@ -84,7 +95,7 @@ func realOrders(t *testing.T) *app.Service {
 		}
 		return domain.Product{ID: id, UnitAmount: 10000, Currency: domain.BRL}, nil
 	})
-	return app.NewService(catalog, repoFunc(func(context.Context, domain.Order) error { return nil }),
+	return app.NewService(catalog, &repoStub{},
 		app.WithClock(func() time.Time { return time.Date(2026, 9, 6, 15, 0, 0, 0, time.UTC) }),
 		app.WithIDGenerator(func() (string, error) { return "ord_fixed", nil }),
 	)
@@ -96,25 +107,200 @@ func (f catalogFunc) Product(ctx context.Context, id string) (domain.Product, er
 	return f(ctx, id)
 }
 
-type repoFunc func(ctx context.Context, order domain.Order) error
+type repoStub struct{}
 
-func (f repoFunc) Create(ctx context.Context, order domain.Order) error { return f(ctx, order) }
+func (*repoStub) CreateOrGet(_ context.Context, order domain.Order) (domain.Order, bool, error) {
+	return order, true, nil
+}
+
+func (*repoStub) Get(context.Context, string) (domain.Order, error) {
+	return domain.Order{}, app.ErrOrderNotFound
+}
 
 func newTestHandler(orders OrderCreator) http.Handler {
-	api := NewAPIHandler(health.New("payments-api", "test", nil), orders)
-	return New(Config{Address: ":0", ShutdownTimeout: time.Second}, zap.NewNop(), api).server.Handler
+	return newTestHandlerWithCheckout(orders, nil)
 }
+
+func newTestHandlerWithCheckout(orders OrderCreator, checkouts CheckoutCreator) http.Handler {
+	api := NewAPIHandler(health.New("payments-api", "test", nil), orders, checkouts)
+	verifier := verifierFunc(func(candidate string) bool { return candidate == testAPIKey })
+	return New(Config{Address: ":0", ShutdownTimeout: time.Second}, zap.NewNop(), api, verifier).server.Handler
+}
+
+type stubCheckouts struct {
+	checkout paymentapp.Checkout
+	err      error
+	got      paymentapp.CreateInput
+	calls    int
+}
+
+func (s *stubCheckouts) CreateCheckout(_ context.Context, input paymentapp.CreateInput) (paymentapp.Checkout, error) {
+	s.calls++
+	s.got = input
+	return s.checkout, s.err
+}
+
+func TestGetOrder(t *testing.T) {
+	t.Parallel()
+
+	orderID := "ord_0123456789abcdef0123456789abcdef"
+	orders := &stubOrders{order: domain.Order{ID: orderID, Status: domain.StatusPending, Amount: 10000, Currency: domain.BRL}}
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/orders/"+orderID, nil)
+	request.Header.Set(apiKeyHeader, testAPIKey)
+	recorder := httptest.NewRecorder()
+	newTestHandler(orders).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", recorder.Code, recorder.Body.String())
+	}
+	var body openapi.Order
+	if err := json.NewDecoder(recorder.Body).Decode(&body); err != nil {
+		t.Fatalf("decode order: %v", err)
+	}
+	if body.Id != orderID || body.Amount != 10000 || body.Currency != "BRL" {
+		t.Fatalf("body = %#v, want persisted order", body)
+	}
+}
+
+func TestGetOrderNotFound(t *testing.T) {
+	t.Parallel()
+
+	orderID := "ord_0123456789abcdef0123456789abcdef"
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/orders/"+orderID, nil)
+	request.Header.Set(apiKeyHeader, testAPIKey)
+	recorder := httptest.NewRecorder()
+	newTestHandler(&stubOrders{err: app.ErrOrderNotFound}).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (%s)", recorder.Code, recorder.Body.String())
+	}
+	if body := decodeError(t, recorder); body.Code != codeOrderNotFound {
+		t.Fatalf("error = %#v, want %q", body, codeOrderNotFound)
+	}
+}
+
+func TestCreateCheckout(t *testing.T) {
+	t.Parallel()
+
+	orderID := "ord_0123456789abcdef0123456789abcdef"
+	expires := time.Date(2026, 9, 7, 15, 0, 0, 0, time.UTC)
+	checkouts := &stubCheckouts{checkout: paymentapp.Checkout{
+		URL: "https://checkout.stripe.com/c/pay/test", ExpiresAt: expires,
+	}}
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/orders/"+orderID+"/checkout", nil)
+	request.Header.Set(apiKeyHeader, testAPIKey)
+	request.Header.Set("Idempotency-Key", "checkout-key")
+	recorder := httptest.NewRecorder()
+	newTestHandlerWithCheckout(nil, checkouts).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (%s)", recorder.Code, recorder.Body.String())
+	}
+	if checkouts.got != (paymentapp.CreateInput{OrderID: orderID, IdempotencyKey: "checkout-key"}) {
+		t.Fatalf("checkout input = %#v, want path and idempotency key", checkouts.got)
+	}
+	var body openapi.Checkout
+	if err := json.NewDecoder(recorder.Body).Decode(&body); err != nil {
+		t.Fatalf("decode checkout: %v", err)
+	}
+	if body.CheckoutUrl != checkouts.checkout.URL || !body.ExpiresAt.Equal(expires) {
+		t.Fatalf("body = %#v, want checkout response", body)
+	}
+}
+
+func TestCreateCheckoutExpectedErrors(t *testing.T) {
+	t.Parallel()
+
+	orderID := "ord_0123456789abcdef0123456789abcdef"
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{name: "order missing", err: app.ErrOrderNotFound, status: http.StatusNotFound, code: codeOrderNotFound},
+		{name: "key conflict", err: paymentapp.ErrIdempotencyKeyConflict, status: http.StatusConflict, code: codeIdempotencyKeyConflict},
+		{name: "checkout active", err: paymentapp.ErrCheckoutInProgress, status: http.StatusConflict, code: codeCheckoutInProgress},
+		{name: "order not payable", err: paymentapp.ErrOrderNotPayable, status: http.StatusConflict, code: codeOrderNotPayable},
+		{name: "provider unavailable", err: paymentapp.ErrProviderUnavailable, status: http.StatusBadGateway, code: codeProviderUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/orders/"+orderID+"/checkout", nil)
+			request.Header.Set(apiKeyHeader, testAPIKey)
+			request.Header.Set("Idempotency-Key", "checkout-key")
+			recorder := httptest.NewRecorder()
+			newTestHandlerWithCheckout(nil, &stubCheckouts{err: tt.err}).ServeHTTP(recorder, request)
+			if recorder.Code != tt.status {
+				t.Fatalf("status = %d, want %d (%s)", recorder.Code, tt.status, recorder.Body.String())
+			}
+			if body := decodeError(t, recorder); body.Code != tt.code {
+				t.Fatalf("error = %#v, want %q", body, tt.code)
+			}
+		})
+	}
+}
+
+const testAPIKey = "test-api-key-with-at-least-32-characters"
 
 func postOrder(t *testing.T, handler http.Handler, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/orders", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(apiKeyHeader, testAPIKey)
 	for name, value := range headers {
 		request.Header.Set(name, value)
 	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder
+}
+
+func TestCreateOrderRequiresAPIKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "missing"},
+		{name: "invalid", key: "invalid-api-key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			orders := &stubOrders{}
+			recorder := postOrder(t, newTestHandler(orders), `{"productId":"product_demo","quantity":1}`, map[string]string{
+				"Idempotency-Key": "key-1",
+				apiKeyHeader:      tt.key,
+			})
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401 (%s)", recorder.Code, recorder.Body.String())
+			}
+			body := decodeError(t, recorder)
+			if body.Code != codeUnauthorized || body.Message != ErrUnauthorized.Error() {
+				t.Fatalf("error = %#v, want a generic unauthorized error", body)
+			}
+			if orders.calls != 0 {
+				t.Fatalf("order service calls = %d, want none", orders.calls)
+			}
+		})
+	}
+}
+
+func TestHealthRemainsPublic(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(nil)
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", recorder.Code, recorder.Body.String())
+	}
 }
 
 func decodeError(t *testing.T, recorder *httptest.ResponseRecorder) openapi.Error {

@@ -40,6 +40,10 @@ Variáveis mínimas:
 ```dotenv
 APP_ENV=production
 DATABASE_URL=${{Postgres.DATABASE_URL}}
+INTEGRATION_API_KEYS=<chave-gerada-com-openssl-rand-hex-32>
+STRIPE_SECRET_KEY=<sk_test_...-ou-chave-do-ambiente>
+STRIPE_SUCCESS_URL=https://seu-frontend.example/pagamento/sucesso
+STRIPE_CANCEL_URL=https://seu-frontend.example/pagamento/cancelado
 LOG_LEVEL=info
 LOG_FORMAT=json
 STARTUP_TIMEOUT=60s

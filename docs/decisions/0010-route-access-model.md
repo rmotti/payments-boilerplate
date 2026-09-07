@@ -2,7 +2,8 @@
 
 - Status: aceito
 - Data: 2026-09-06
-- Implementação: pendente
+- Implementação: concluída para as rotas de negócio; endurecimento da
+  documentação pendente na Fase 4
 
 ## Contexto
 
@@ -34,7 +35,7 @@ modelo SaaS multi-tenant e permanece fora do escopo.
 
 ### Autenticação do integrador
 
-As rotas de negócio exigirão uma chave opaca no header `X-API-Key`. As chaves
+As rotas de negócio exigem uma chave opaca no header `X-API-Key`. As chaves
 serão fornecidas por `INTEGRATION_API_KEYS`, com suporte a mais de uma chave
 ativa para permitir rotação sem indisponibilidade.
 
@@ -46,13 +47,17 @@ As chaves devem:
 - nunca aparecer em URLs, respostas, logs, traces ou métricas;
 - ser comparadas de forma resistente a ataques de timing.
 
-Chave ausente ou inválida produzirá a mesma resposta `401 Unauthorized`, com
+Chave ausente ou inválida produz a mesma resposta `401 Unauthorized`, com
 código estável `unauthorized` e sem revelar a causa. `403 Forbidden` fica
 reservado para uma autorização futura por escopo, papel ou tenant.
 
+O binding gerado pelo OpenAPI ocorre antes desse middleware e pode rejeitar com
+`400 Bad Request` um corpo malformado ou um header estrutural obrigatório
+ausente. Essa precedência não libera acesso ao caso de uso.
+
 ### Política das rotas
 
-A política será protegida por padrão. Somente operações presentes em uma lista
+A política é protegida por padrão. Somente operações presentes em uma lista
 pública explícita poderão ignorar a chave do integrador.
 
 | Operação | Acesso na versão 0.1 |
@@ -62,8 +67,12 @@ pública explícita poderão ignorar a chave do integrador.
 | `GET /v1/orders/{orderId}` | `X-API-Key` obrigatória |
 | `POST /v1/webhooks/stripe` | Público na rede; `Stripe-Signature` obrigatória |
 | `GET /health` da API | Público, com resposta mínima |
-| `GET /docs` e `GET /openapi.yaml` | Disponíveis em desenvolvimento; desabilitados por padrão em produção |
+| `GET /docs` e `GET /openapi.yaml` | Públicos quando `DocsEnabled=true`; o comando `api` atual os habilita em todos os ambientes |
 | `GET /health` do worker | Restrito à rede privada da infraestrutura |
+
+As rotas de documentação não passam pelo strict server e, portanto, não exigem
+`X-API-Key`. Desabilitá-las ou protegê-las fora do ambiente de desenvolvimento
+permanece explicitamente planejado para a Fase 4.
 
 Público não significa confiável. O webhook é alcançável pela Stripe, mas só é
 aceito depois da verificação criptográfica do header `Stripe-Signature` sobre o
@@ -72,7 +81,7 @@ enumeração, não substituto para autenticação ou autorização.
 
 ### Fronteira arquitetural
 
-A autenticação será aplicada pela camada HTTP antes do handler de negócio. Com
+A autenticação é aplicada pela camada HTTP antes do handler de negócio. Com
 o strict server atual, o fluxo será:
 
 ```text
@@ -84,16 +93,15 @@ correlation id
   -> caso de uso
 ```
 
-O limite de 64 KiB continua aplicado antes do decode. O middleware usará o
+O limite de 64 KiB continua aplicado antes do decode. O middleware usa o
 `operationId` gerado pelo OpenAPI para manter uma lista pública pequena e negar
 por padrão as demais operações.
 
 Validação de credenciais pertence à infraestrutura HTTP. Domínio, application
 services, catálogo e repositórios não recebem headers nem conhecem API keys.
 
-O OpenAPI declarará um `securityScheme` do tipo `apiKey` quando o middleware for
-implementado. Até lá, o contrato executável não anunciará uma proteção que o
-runtime ainda não aplica.
+O OpenAPI declara um `securityScheme` do tipo `apiKey` global, com exceção
+explícita para operações públicas.
 
 ## Alternativas consideradas
 
@@ -128,22 +136,28 @@ Essa evolução exige uma nova decisão de produto e arquitetura.
 - A proteção não contamina o domínio com detalhes de HTTP.
 - Novas operações nascem protegidas até serem deliberadamente liberadas.
 - Rotação pode ocorrer mantendo duas chaves ativas por um período curto.
-- Swagger continua útil localmente sem ampliar a superfície de produção.
+- Swagger continua útil para exercitar localmente o fluxo de sandbox.
 
 ### Limitações
 
 - Uma chave comprometida dá acesso a todos os pedidos da instalação.
 - Não existe isolamento entre várias empresas no mesmo banco.
 - Revogação e rotação dependem de configuração e novo deploy.
+- O comando `api` ainda expõe `/docs` e `/openapi.yaml` publicamente em qualquer
+  `APP_ENV`; o endurecimento dessa superfície pertence à Fase 4.
 - Quem adotar o projeto continua responsável por TLS, gestão de secrets,
   controles de borda e adequação do mecanismo ao seu risco.
 
 ## Estado de implementação
 
-Esta decisão documenta a política, mas não altera o comportamento atual. O item
-seguinte do roadmap implementará configuração, verificador, middleware, erros,
-OpenAPI e testes. Até essa entrega, as rotas já existentes continuam sem
-autenticação de integração.
+A API carrega `INTEGRATION_API_KEYS`, valida e mantém em memória somente tags
+HMAC-SHA-256 produzidas com um segredo aleatório por processo. A autenticação é
+aplicada por `operationId`, e as comparações percorrem todas as chaves ativas em
+tempo constante. O OpenAPI expõe o esquema para uso pelo Swagger UI. Testes
+cobrem rotação, configuração inválida, acesso público, negação por padrão e
+ausência de chamada ao caso de uso quando a autenticação falha. A documentação
+HTTP permanece pública enquanto habilitada; o comando `api` ainda não
+diferencia ambientes para essa configuração.
 
 ## Referências
 

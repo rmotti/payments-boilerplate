@@ -11,7 +11,7 @@ não será um gateway, uma instituição financeira nem um sistema que captura o
 armazena dados completos de cartão.
 
 > [!IMPORTANT]
-> O projeto está na fase de fundação executável. Ainda não existe uma versão pronta para
+> O projeto está no primeiro fluxo vertical. Ainda não existe uma versão pronta para
 > produção e o uso deste código não garante conformidade com PCI DSS, LGPD ou
 > qualquer outra obrigação regulatória.
 
@@ -22,15 +22,27 @@ Pré-requisitos:
 - Go 1.26 ou 1.27;
 - Docker com Docker Compose;
 - Make, opcional, para os atalhos documentados.
+- uma conta Stripe com chave secreta de teste (`sk_test_...`) para abrir o
+  checkout real.
 
 Prepare a configuração e as dependências:
 
 ```bash
 cp .env.example .env
+openssl rand -hex 32
 make infra-up
 make migrate-up
 make generate
 ```
+
+Copie a saída do `openssl` para `INTEGRATION_API_KEYS` no `.env`. A variável
+aceita uma ou mais chaves separadas por vírgula para permitir rotação. Cada
+chave deve ter ao menos 32 caracteres; use o comando acima para gerar 256 bits
+aleatórios em vez de inventar uma senha.
+
+Copie também uma chave secreta do modo de teste da Stripe para
+`STRIPE_SECRET_KEY`. As URLs de sucesso e cancelamento da `.env.example` voltam
+à documentação local e podem ser substituídas pelas páginas do seu frontend.
 
 Execute API e worker em terminais separados:
 
@@ -50,15 +62,45 @@ curl --fail --show-error http://localhost:8080/health
 curl --fail --show-error http://localhost:8080/openapi.yaml
 ```
 
+Escolha uma das chaves configuradas para os comandos seguintes:
+
+```bash
+export API_KEY='<a-mesma-chave-gravada-em-INTEGRATION_API_KEYS>'
+```
+
 Crie um pedido de demonstração. O valor vem do catálogo do servidor, nunca da
-requisição:
+requisição (copie o campo `id` da resposta):
 
 ```bash
 curl --fail --show-error http://localhost:8080/v1/orders \
   -H 'Content-Type: application/json' \
+  -H "X-API-Key: $API_KEY" \
   -H "Idempotency-Key: $(uuidgen)" \
   -d '{"productId":"product_demo","quantity":1}'
 ```
+
+Use esse identificador para criar o checkout:
+
+```bash
+export ORDER_ID='ord_...'
+curl --fail --show-error -X POST \
+  "http://localhost:8080/v1/orders/$ORDER_ID/checkout" \
+  -H "X-API-Key: $API_KEY" \
+  -H "Idempotency-Key: $(uuidgen)"
+```
+
+Abra a `checkoutUrl` retornada e pague no sandbox com `4242 4242 4242 4242`,
+uma data futura e qualquer CVC. Consulte o estado local com:
+
+```bash
+curl --fail --show-error \
+  "http://localhost:8080/v1/orders/$ORDER_ID" \
+  -H "X-API-Key: $API_KEY"
+```
+
+Até a Fase 3, o pagamento é concluído na Stripe, mas o pedido local permanece
+`pending`: webhooks verificados e a atualização assíncrona ainda serão
+implementados. A página de retorno nunca confirma pagamento.
 
 Para incluir o ambiente de observabilidade:
 
@@ -108,10 +150,12 @@ parte da primeira versão.
 
 Cada instalação atende um único integrador e usa seu próprio banco, conta
 Stripe e credenciais. O modelo aprovado exige `X-API-Key` nas rotas de negócio,
-mantém health público, autentica webhooks pela assinatura da Stripe e desabilita
-o Swagger por padrão em produção. Essa política está documentada, mas o
-middleware ainda será implementado no próximo item do roadmap; até lá, as rotas
-existentes não devem ser expostas diretamente à internet.
+mantém health público e autentica webhooks pela assinatura da Stripe. No runtime
+atual, `/docs` e `/openapi.yaml` são públicos e o comando `api` os habilita em
+todos os ambientes. Desabilitar ou proteger essa documentação fora do ambiente
+de desenvolvimento permanece planejado para a Fase 4. A API aceita mais de uma
+chave ativa para rotação e responde `401 Unauthorized` sem distinguir chave
+ausente de inválida.
 
 ## Jornada da pessoa desenvolvedora
 
@@ -235,7 +279,7 @@ o Swagger UI representa no diagrama.
 | Primeiro provedor | Stripe Checkout |
 | Meio inicial | Cartão em BRL; Pix após validar o fluxo assíncrono |
 | Modelo de implantação | Um integrador por instalação |
-| Acesso às rotas de negócio | API key do integrador; implementação pendente |
+| Acesso às rotas de negócio | API key do integrador |
 | Licença open source | Apache-2.0 |
 | Versionamento | SemVer; série `v0.x` experimental |
 | Commits e pull requests | Conventional Commits + squash merge |

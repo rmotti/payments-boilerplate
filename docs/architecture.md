@@ -105,7 +105,7 @@ infraestrutura -------- rede/probe ------> health
 desenvolvedor ---------- ambiente local --> Swagger UI
 ```
 
-A camada HTTP aplicará autenticação por API key às operações de negócio. A
+A camada HTTP aplica autenticação por API key às operações de negócio. A
 política nega acesso por padrão e libera explicitamente apenas health e os
 endpoints com autenticação própria, como o webhook assinado. O domínio e os
 casos de uso não conhecem headers ou credenciais.
@@ -115,8 +115,7 @@ desenvolvimento e desabilitados por padrão em produção. TLS, gestão de secre
 controles de borda continuam sob responsabilidade de quem implanta o projeto.
 
 O modelo completo, alternativas e limitações estão no
-[ADR 0010](decisions/0010-route-access-model.md). Sua implementação é o próximo
-item do roadmap; esta seção não afirma que o runtime atual já exige a chave.
+[ADR 0010](decisions/0010-route-access-model.md).
 
 ## Modelo de domínio mínimo
 
@@ -255,11 +254,16 @@ pkg/<provider>
 
 ## Interface do provedor
 
-A interface inicial deve conter somente operações exigidas pelo fluxo real. Uma
-forma conceitual, ainda não normativa, seria:
+A aplicação já usa uma porta pequena para a operação exigida pela Fase 2:
 
 ```text
-CreateCheckout(ctx, order, idempotencyKey) -> checkout reference
+CreateCheckout(ctx, trusted order data, idempotencyKey) -> checkout reference
+```
+
+Na Fase 3, as operações de webhook entram apenas quando seus casos de uso forem
+implementados:
+
+```text
 ParseAndVerifyWebhook(rawBody, headers) -> provider event
 MapEvent(providerEvent) -> domain event
 ```
