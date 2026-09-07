@@ -10,6 +10,7 @@ require (
 	github.com/oapi-codegen/runtime v1.6.0
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/rabbitmq/amqp091-go v1.14.0
+	github.com/stripe/stripe-go/v86 v86.2.0
 	github.com/swaggest/swgui v1.8.9
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.71.0

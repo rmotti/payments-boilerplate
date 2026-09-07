@@ -7,20 +7,17 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/rmotti/payments-boilerplate/internal/adapters/postgres/models"
 	app "github.com/rmotti/payments-boilerplate/internal/application/orders"
 	domain "github.com/rmotti/payments-boilerplate/internal/domain/orders"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
 	// writeTimeout bounds every statement so a stalled database never pins a
 	// request for longer than the caller would tolerate.
 	writeTimeout = 5 * time.Second
-
-	uniqueViolation                = "23505"
-	ordersIdempotencyKeyConstraint = "orders_idempotency_key_key"
 )
 
 // OrderRepository persists orders with GORM. Plain inserts are ordinary CRUD;
@@ -34,26 +31,42 @@ func NewOrderRepository(db *gorm.DB) *OrderRepository {
 	return &OrderRepository{db: db}
 }
 
-// Create inserts a new order. A reused idempotency key surfaces as
-// app.ErrIdempotencyKeyConflict so the use case can answer deterministically.
-func (r *OrderRepository) Create(ctx context.Context, order domain.Order) error {
+// CreateOrGet inserts an order or returns the row that already owns its
+// idempotency key. The application decides whether that replay is equivalent.
+func (r *OrderRepository) CreateOrGet(ctx context.Context, order domain.Order) (domain.Order, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
 
 	row := models.OrderFromDomain(order)
-	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
-		if isUniqueViolation(err, ordersIdempotencyKeyConstraint) {
-			return app.ErrIdempotencyKeyConflict
-		}
-		return fmt.Errorf("insert order: %w", err)
+	result := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "idempotency_key"}},
+		DoNothing: true,
+	}).Create(&row)
+	if result.Error != nil {
+		return domain.Order{}, false, fmt.Errorf("insert order: %w", result.Error)
 	}
-	return nil
+	if result.RowsAffected == 1 {
+		return order, true, nil
+	}
+
+	var existing models.Order
+	if err := r.db.WithContext(ctx).Where("idempotency_key = ?", order.IdempotencyKey).First(&existing).Error; err != nil {
+		return domain.Order{}, false, fmt.Errorf("find order idempotency replay: %w", err)
+	}
+	return existing.ToDomain(), false, nil
 }
 
-func isUniqueViolation(err error, constraint string) bool {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		return false
+// Get returns an order by its opaque public identifier.
+func (r *OrderRepository) Get(ctx context.Context, id string) (domain.Order, error) {
+	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+
+	var row models.Order
+	if err := r.db.WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return domain.Order{}, app.ErrOrderNotFound
+		}
+		return domain.Order{}, fmt.Errorf("select order: %w", err)
 	}
-	return pgErr.Code == uniqueViolation && pgErr.ConstraintName == constraint
+	return row.ToDomain(), nil
 }

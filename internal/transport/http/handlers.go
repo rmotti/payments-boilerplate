@@ -5,8 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	app "github.com/rmotti/payments-boilerplate/internal/application/orders"
-	domain "github.com/rmotti/payments-boilerplate/internal/domain/orders"
+	orderapp "github.com/rmotti/payments-boilerplate/internal/application/orders"
+	paymentapp "github.com/rmotti/payments-boilerplate/internal/application/payments"
+	orderdomain "github.com/rmotti/payments-boilerplate/internal/domain/orders"
 	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/transport/http/openapi"
 )
@@ -17,20 +18,27 @@ var ErrNotServed = errors.New("operation not served by this process")
 
 // OrderCreator is the slice of the order use cases the HTTP layer depends on.
 type OrderCreator interface {
-	Create(ctx context.Context, in app.CreateInput) (domain.Order, error)
+	Create(ctx context.Context, in orderapp.CreateInput) (orderdomain.Order, error)
+	Get(ctx context.Context, id string) (orderdomain.Order, error)
+}
+
+// CheckoutCreator is the checkout capability required by the HTTP layer.
+type CheckoutCreator interface {
+	CreateCheckout(ctx context.Context, in paymentapp.CreateInput) (paymentapp.Checkout, error)
 }
 
 // APIHandler implements the generated strict OpenAPI contract.
 type APIHandler struct {
-	health *health.Service
-	orders OrderCreator
+	health    *health.Service
+	orders    OrderCreator
+	checkouts CheckoutCreator
 }
 
 // NewAPIHandler composes the HTTP handlers required by the OpenAPI contract.
 // A nil orders service makes order operations answer 501, which is what the
 // worker wants: it shares the contract but only serves health.
-func NewAPIHandler(healthService *health.Service, orders OrderCreator) *APIHandler {
-	return &APIHandler{health: healthService, orders: orders}
+func NewAPIHandler(healthService *health.Service, orders OrderCreator, checkouts CheckoutCreator) *APIHandler {
+	return &APIHandler{health: healthService, orders: orders, checkouts: checkouts}
 }
 
 // GetHealth returns aggregate process readiness.
@@ -74,7 +82,7 @@ func (h *APIHandler) CreateOrder(
 		return openapi.CreateOrder400JSONResponse(newError(ctx, codeInvalidRequest, "request body is required")), nil
 	}
 
-	order, err := h.orders.Create(ctx, app.CreateInput{
+	order, err := h.orders.Create(ctx, orderapp.CreateInput{
 		ProductID:      request.Body.ProductId,
 		Quantity:       request.Body.Quantity,
 		IdempotencyKey: request.Params.IdempotencyKey,
@@ -88,14 +96,14 @@ func (h *APIHandler) CreateOrder(
 
 func createOrderError(ctx context.Context, err error) (openapi.CreateOrderResponseObject, error) {
 	switch {
-	case errors.Is(err, domain.ErrInvalidProductID),
-		errors.Is(err, domain.ErrInvalidQuantity),
-		errors.Is(err, domain.ErrInvalidIdempotencyKey):
+	case errors.Is(err, orderdomain.ErrInvalidProductID),
+		errors.Is(err, orderdomain.ErrInvalidQuantity),
+		errors.Is(err, orderdomain.ErrInvalidIdempotencyKey):
 		return openapi.CreateOrder400JSONResponse(newError(ctx, codeInvalidRequest, err.Error())), nil
-	case errors.Is(err, app.ErrProductNotFound):
-		return openapi.CreateOrder404JSONResponse(newError(ctx, codeProductNotFound, app.ErrProductNotFound.Error())), nil
-	case errors.Is(err, app.ErrIdempotencyKeyConflict):
-		return openapi.CreateOrder409JSONResponse(newError(ctx, codeIdempotencyKeyConflict, app.ErrIdempotencyKeyConflict.Error())), nil
+	case errors.Is(err, orderapp.ErrProductNotFound):
+		return openapi.CreateOrder404JSONResponse(newError(ctx, codeProductNotFound, orderapp.ErrProductNotFound.Error())), nil
+	case errors.Is(err, orderapp.ErrIdempotencyKeyConflict):
+		return openapi.CreateOrder409JSONResponse(newError(ctx, codeIdempotencyKeyConflict, orderapp.ErrIdempotencyKeyConflict.Error())), nil
 	default:
 		// Anything else is unexpected. Hand it to the server so it is logged
 		// with the correlation id and answered as a generic 500.
@@ -103,11 +111,67 @@ func createOrderError(ctx context.Context, err error) (openapi.CreateOrderRespon
 	}
 }
 
-func orderResponse(order domain.Order) openapi.Order {
+func orderResponse(order orderdomain.Order) openapi.Order {
 	return openapi.Order{
 		Id:       order.ID,
 		Status:   openapi.OrderStatus(order.Status),
 		Amount:   order.Amount,
 		Currency: string(order.Currency),
+	}
+}
+
+// GetOrder returns the state persisted locally; redirect URLs never change it.
+func (h *APIHandler) GetOrder(
+	ctx context.Context,
+	request openapi.GetOrderRequestObject,
+) (openapi.GetOrderResponseObject, error) {
+	if h.orders == nil {
+		return nil, ErrNotServed
+	}
+	order, err := h.orders.Get(ctx, string(request.OrderId))
+	if err != nil {
+		if errors.Is(err, orderapp.ErrOrderNotFound) {
+			return openapi.GetOrder404JSONResponse(newError(ctx, codeOrderNotFound, orderapp.ErrOrderNotFound.Error())), nil
+		}
+		return nil, fmt.Errorf("get order: %w", err)
+	}
+	return openapi.GetOrder200JSONResponse(orderResponse(order)), nil
+}
+
+// CreateCheckout opens or recovers an idempotent Stripe hosted session.
+func (h *APIHandler) CreateCheckout(
+	ctx context.Context,
+	request openapi.CreateCheckoutRequestObject,
+) (openapi.CreateCheckoutResponseObject, error) {
+	if h.checkouts == nil {
+		return nil, ErrNotServed
+	}
+	checkout, err := h.checkouts.CreateCheckout(ctx, paymentapp.CreateInput{
+		OrderID: string(request.OrderId), IdempotencyKey: request.Params.IdempotencyKey,
+	})
+	if err != nil {
+		return createCheckoutError(ctx, err)
+	}
+	return openapi.CreateCheckout201JSONResponse{
+		CheckoutUrl: checkout.URL, ExpiresAt: checkout.ExpiresAt,
+	}, nil
+}
+
+func createCheckoutError(ctx context.Context, err error) (openapi.CreateCheckoutResponseObject, error) {
+	switch {
+	case errors.Is(err, orderdomain.ErrInvalidIdempotencyKey):
+		return openapi.CreateCheckout400JSONResponse(newError(ctx, codeInvalidRequest, err.Error())), nil
+	case errors.Is(err, orderapp.ErrOrderNotFound):
+		return openapi.CreateCheckout404JSONResponse(newError(ctx, codeOrderNotFound, orderapp.ErrOrderNotFound.Error())), nil
+	case errors.Is(err, paymentapp.ErrIdempotencyKeyConflict):
+		return openapi.CreateCheckout409JSONResponse(newError(ctx, codeIdempotencyKeyConflict, paymentapp.ErrIdempotencyKeyConflict.Error())), nil
+	case errors.Is(err, paymentapp.ErrCheckoutInProgress):
+		return openapi.CreateCheckout409JSONResponse(newError(ctx, codeCheckoutInProgress, paymentapp.ErrCheckoutInProgress.Error())), nil
+	case errors.Is(err, paymentapp.ErrOrderNotPayable):
+		return openapi.CreateCheckout409JSONResponse(newError(ctx, codeOrderNotPayable, paymentapp.ErrOrderNotPayable.Error())), nil
+	case errors.Is(err, paymentapp.ErrProviderUnavailable):
+		return openapi.CreateCheckout502JSONResponse(newError(ctx, codeProviderUnavailable, paymentapp.ErrProviderUnavailable.Error())), nil
+	default:
+		return nil, fmt.Errorf("create checkout: %w", err)
 	}
 }

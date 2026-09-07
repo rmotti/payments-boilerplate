@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -26,6 +27,13 @@ type Config struct {
 	DatabaseConnectionMaxLifetime time.Duration `env:"DATABASE_CONNECTION_MAX_LIFETIME" envDefault:"30m"`
 
 	RabbitMQURL string `env:"RABBITMQ_URL"`
+
+	IntegrationAPIKeys []string `env:"INTEGRATION_API_KEYS"`
+
+	StripeSecretKey     string `env:"STRIPE_SECRET_KEY"`
+	StripeWebhookSecret string `env:"STRIPE_WEBHOOK_SECRET"`
+	StripeSuccessURL    string `env:"STRIPE_SUCCESS_URL"`
+	StripeCancelURL     string `env:"STRIPE_CANCEL_URL"`
 
 	LogLevel  string `env:"LOG_LEVEL" envDefault:"info"`
 	LogFormat string `env:"LOG_FORMAT" envDefault:"json"`
@@ -84,4 +92,24 @@ func Load(serviceName, defaultHTTPAddress string, requireRabbitMQ bool) (Config,
 	}
 
 	return cfg, nil
+}
+
+// ValidateStripe checks the configuration required by the API checkout flow.
+// It is separate from Load because the worker does not call Stripe.
+func (c Config) ValidateStripe() error {
+	if c.StripeSecretKey == "" {
+		return errors.New("STRIPE_SECRET_KEY is required for the API")
+	}
+	if err := validateReturnURL("STRIPE_SUCCESS_URL", c.StripeSuccessURL); err != nil {
+		return err
+	}
+	return validateReturnURL("STRIPE_CANCEL_URL", c.StripeCancelURL)
+}
+
+func validateReturnURL(name, value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("%s must be an absolute HTTP or HTTPS URL", name)
+	}
+	return nil
 }

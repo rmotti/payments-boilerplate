@@ -88,12 +88,12 @@ func run() error {
 		"postgres": db.Ping,
 		"rabbitmq": broker.Ping,
 	})
-	apiHandler := httpserver.NewAPIHandler(healthService, nil)
+	apiHandler := httpserver.NewAPIHandler(healthService, nil, nil)
 	server := httpserver.New(httpserver.Config{
 		Address:         cfg.HTTPAddress,
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		DocsEnabled:     false,
-	}, logger, apiHandler)
+	}, logger, apiHandler, nil)
 
 	logger.Info("worker starting",
 		zap.String("health_address", cfg.HTTPAddress),

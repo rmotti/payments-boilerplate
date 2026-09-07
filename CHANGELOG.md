@@ -21,8 +21,13 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `POST /v1/orders` com valor e moeda calculados no servidor a partir de um
   catálogo fixo, header `Idempotency-Key` obrigatório e erros JSON com código
   estável e identificador de correlação.
-- Modelo de acesso self-hosted e single-integrator: API key nas rotas de
-  negócio, assinatura Stripe nos webhooks, health público e documentação de
-  API restrita ao desenvolvimento.
+- Modelo de acesso self-hosted e single-integrator, com autenticação por API key
+  protegendo as rotas de negócio por padrão, rotação de credenciais e health
+  público.
+- Stripe Checkout hospedado para cartão em BRL, com sessão ligada a `Payment` e
+  `PaymentAttempt`, proteção contra checkouts concorrentes e persistência da URL
+  antes da resposta, validado por um pagamento completo no sandbox.
+- Idempotência transparente em criação de pedidos e checkouts, além de
+  `GET /v1/orders/{orderId}` para consultar o estado local.
 
 [Unreleased]: https://github.com/rmotti/payments-boilerplate/commits/main

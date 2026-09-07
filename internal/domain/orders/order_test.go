@@ -93,6 +93,20 @@ func TestNewIDIsOpaqueAndUnique(t *testing.T) {
 	}
 }
 
+func TestValidateID(t *testing.T) {
+	t.Parallel()
+
+	valid := "ord_0123456789abcdef0123456789abcdef"
+	if err := ValidateID(valid); err != nil {
+		t.Fatalf("ValidateID(%q) error = %v", valid, err)
+	}
+	for _, id := range []string{"", "ord_short", "pay_0123456789abcdef0123456789abcdef", "ord_0123456789abcdef0123456789abcdeg"} {
+		if err := ValidateID(id); !errors.Is(err, ErrInvalidID) {
+			t.Fatalf("ValidateID(%q) error = %v, want %v", id, err, ErrInvalidID)
+		}
+	}
+}
+
 func TestCurrencyValid(t *testing.T) {
 	t.Parallel()
 

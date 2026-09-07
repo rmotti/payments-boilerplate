@@ -5,12 +5,15 @@ info:
   description: API headless de referencia para integracoes de pagamento.
 servers:
   - url: /
+security:
+  - integrationApiKey: []
 paths:
   /health:
     get:
       operationId: getHealth
       summary: Retorna a disponibilidade do processo e de suas dependencias.
       tags: [Operations]
+      security: []
       responses:
         "200":
           description: Processo pronto para receber trabalho.
@@ -73,6 +76,18 @@ paths:
                     code: invalid_request
                     message: quantity must be between 1 and 1000
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
+        "401":
+          description: Chave de integracao ausente ou invalida.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unauthorized:
+                  value:
+                    code: unauthorized
+                    message: authentication required
+                    correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
         "404":
           description: O produto informado nao existe no catalogo.
           content:
@@ -121,8 +136,110 @@ paths:
                     code: internal_error
                     message: internal error
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
+  /v1/orders/{orderId}:
+    parameters:
+      - $ref: "#/components/parameters/OrderId"
+    get:
+      operationId: getOrder
+      summary: Retorna o estado local atual de um pedido.
+      tags: [Orders]
+      responses:
+        "200":
+          description: Pedido encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "401":
+          description: Chave de integracao ausente ou invalida.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Pedido nao encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Falha inesperada ao consultar o pedido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/orders/{orderId}/checkout:
+    parameters:
+      - $ref: "#/components/parameters/OrderId"
+    post:
+      operationId: createCheckout
+      summary: Cria ou recupera uma sessao hospedada de pagamento.
+      description: |
+        Usa exclusivamente o valor e a moeda persistidos no pedido. Repetir a
+        mesma Idempotency-Key para o mesmo pedido devolve a sessao original.
+      tags: [Payments]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201":
+          description: Sessao de Checkout pronta para redirecionamento.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Checkout"
+        "400":
+          description: Header de idempotencia ausente ou invalido.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Chave de integracao ausente ou invalida.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Pedido nao encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Chave reutilizada em outro pedido, pedido nao pagavel ou outro checkout ativo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: O provedor de pagamentos nao respondeu com uma sessao valida.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Falha inesperada ao iniciar o checkout.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
+  securitySchemes:
+    integrationApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Chave secreta do backend integrador.
   parameters:
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      description: Identificador publico opaco do pedido.
+      schema:
+        type: string
+        pattern: '^ord_[0-9a-f]{32}$'
+      example: ord_3f2504e04f8911d39a0c0305e82c3301
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -187,6 +304,18 @@ components:
       type: string
       description: Estado comercial do pedido.
       enum: [pending, paid, cancelled, expired]
+    Checkout:
+      type: object
+      required: [checkoutUrl, expiresAt]
+      properties:
+        checkoutUrl:
+          type: string
+          format: uri
+          description: URL HTTPS hospedada pela Stripe.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Instante em que a sessao deixa de aceitar pagamento.
     Error:
       type: object
       required: [code, message, correlationId]

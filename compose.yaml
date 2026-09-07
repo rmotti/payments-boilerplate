@@ -64,6 +64,11 @@ services:
       APP_ENV: development
       PORT: "8080"
       DATABASE_URL: postgres://payments:payments_local@postgres:5432/payments?sslmode=disable
+      INTEGRATION_API_KEYS: ${INTEGRATION_API_KEYS:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_SUCCESS_URL: ${STRIPE_SUCCESS_URL:-http://localhost:8080/docs/?checkout=success}
+      STRIPE_CANCEL_URL: ${STRIPE_CANCEL_URL:-http://localhost:8080/docs/?checkout=cancelled}
       LOG_FORMAT: json
       OTEL_ENABLED: "false"
     ports:
@@ -93,4 +98,3 @@ services:
 volumes:
   postgres-data:
   rabbitmq-data:
-

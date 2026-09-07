@@ -20,16 +20,30 @@ func (c fakeCatalog) Product(_ context.Context, id string) (domain.Product, erro
 }
 
 type fakeRepository struct {
-	created []domain.Order
-	err     error
+	created  []domain.Order
+	err      error
+	existing *domain.Order
 }
 
-func (r *fakeRepository) Create(_ context.Context, order domain.Order) error {
+func (r *fakeRepository) CreateOrGet(_ context.Context, order domain.Order) (domain.Order, bool, error) {
 	if r.err != nil {
-		return r.err
+		return domain.Order{}, false, r.err
+	}
+	if r.existing != nil {
+		return *r.existing, false, nil
 	}
 	r.created = append(r.created, order)
-	return nil
+	return order, true, nil
+}
+
+func (r *fakeRepository) Get(_ context.Context, id string) (domain.Order, error) {
+	if r.err != nil {
+		return domain.Order{}, r.err
+	}
+	if r.existing == nil || r.existing.ID != id {
+		return domain.Order{}, ErrOrderNotFound
+	}
+	return *r.existing, nil
 }
 
 var demo = domain.Product{ID: "product_demo", Name: "Demo", UnitAmount: 10000, Currency: domain.BRL}
@@ -110,6 +124,65 @@ func TestCreatePropagatesIdempotencyConflict(t *testing.T) {
 	_, err := newService(repo).Create(context.Background(), CreateInput{ProductID: "product_demo", Quantity: 1, IdempotencyKey: "k"})
 	if !errors.Is(err, ErrIdempotencyKeyConflict) {
 		t.Fatalf("Create() error = %v, want %v", err, ErrIdempotencyKeyConflict)
+	}
+}
+
+func TestCreateReturnsOriginalOrderForEquivalentReplay(t *testing.T) {
+	t.Parallel()
+
+	original := domain.Order{
+		ID: "ord_original", Status: domain.StatusPending, Amount: 10000,
+		Currency: domain.BRL, ProductID: "product_demo", Quantity: 1,
+		IdempotencyKey: "key-1",
+	}
+	repo := &fakeRepository{existing: &original}
+	got, err := newService(repo).Create(context.Background(), CreateInput{
+		ProductID: "product_demo", Quantity: 1, IdempotencyKey: "key-1",
+	})
+	if err != nil {
+		t.Fatalf("Create() replay error = %v", err)
+	}
+	if got != original {
+		t.Fatalf("Create() replay = %#v, want %#v", got, original)
+	}
+	if len(repo.created) != 0 {
+		t.Fatalf("repository created %d orders, want none", len(repo.created))
+	}
+}
+
+func TestCreateRejectsReplayWithDifferentPayload(t *testing.T) {
+	t.Parallel()
+
+	original := domain.Order{ID: "ord_original", ProductID: "product_demo", Quantity: 1, IdempotencyKey: "key-1"}
+	repo := &fakeRepository{existing: &original}
+	_, err := newService(repo).Create(context.Background(), CreateInput{
+		ProductID: "product_demo", Quantity: 2, IdempotencyKey: "key-1",
+	})
+	if !errors.Is(err, ErrIdempotencyKeyConflict) {
+		t.Fatalf("Create() replay error = %v, want %v", err, ErrIdempotencyKeyConflict)
+	}
+}
+
+func TestGetReturnsOrder(t *testing.T) {
+	t.Parallel()
+
+	original := domain.Order{ID: "ord_0123456789abcdef0123456789abcdef", Status: domain.StatusPending}
+	repo := &fakeRepository{existing: &original}
+	got, err := newService(repo).Get(context.Background(), original.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got != original {
+		t.Fatalf("Get() = %#v, want %#v", got, original)
+	}
+}
+
+func TestGetHidesInvalidIdentifierAsNotFound(t *testing.T) {
+	t.Parallel()
+
+	_, err := newService(&fakeRepository{}).Get(context.Background(), "not-an-order")
+	if !errors.Is(err, ErrOrderNotFound) {
+		t.Fatalf("Get() error = %v, want %v", err, ErrOrderNotFound)
 	}
 }
 

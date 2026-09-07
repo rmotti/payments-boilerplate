@@ -10,8 +10,11 @@ import (
 	"time"
 
 	"github.com/rmotti/payments-boilerplate/internal/adapters/catalog"
+	stripeadapter "github.com/rmotti/payments-boilerplate/internal/adapters/payments/stripe"
 	"github.com/rmotti/payments-boilerplate/internal/adapters/postgres/repositories"
-	"github.com/rmotti/payments-boilerplate/internal/application/orders"
+	orderapp "github.com/rmotti/payments-boilerplate/internal/application/orders"
+	paymentapp "github.com/rmotti/payments-boilerplate/internal/application/payments"
+	"github.com/rmotti/payments-boilerplate/internal/platform/auth"
 	"github.com/rmotti/payments-boilerplate/internal/platform/buildinfo"
 	"github.com/rmotti/payments-boilerplate/internal/platform/config"
 	"github.com/rmotti/payments-boilerplate/internal/platform/database"
@@ -34,6 +37,13 @@ func run() error {
 	cfg, err := config.Load("payments-api", ":8080", false)
 	if err != nil {
 		return err
+	}
+	apiKeyVerifier, err := auth.NewAPIKeyVerifier(cfg.IntegrationAPIKeys)
+	if err != nil {
+		return fmt.Errorf("configure integration authentication: %w", err)
+	}
+	if err := cfg.ValidateStripe(); err != nil {
+		return fmt.Errorf("configure Stripe: %w", err)
 	}
 	logger, err := logging.New(cfg)
 	if err != nil {
@@ -75,13 +85,18 @@ func run() error {
 	healthService := health.New(cfg.ServiceName, buildinfo.Version, map[string]health.Checker{
 		"postgres": db.Ping,
 	})
-	orderService := orders.NewService(catalog.Demo(), repositories.NewOrderRepository(db.GORM))
-	apiHandler := httpserver.NewAPIHandler(healthService, orderService)
+	orderService := orderapp.NewService(catalog.Demo(), repositories.NewOrderRepository(db.GORM))
+	checkoutService := paymentapp.NewService(
+		orderService,
+		repositories.NewPaymentRepository(db.GORM),
+		stripeadapter.NewCheckout(cfg.StripeSecretKey, cfg.StripeSuccessURL, cfg.StripeCancelURL),
+	)
+	apiHandler := httpserver.NewAPIHandler(healthService, orderService, checkoutService)
 	server := httpserver.New(httpserver.Config{
 		Address:         cfg.HTTPAddress,
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		DocsEnabled:     true,
-	}, logger, apiHandler)
+	}, logger, apiHandler, apiKeyVerifier)
 
 	logger.Info("api starting",
 		zap.String("address", cfg.HTTPAddress),

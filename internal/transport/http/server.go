@@ -43,9 +43,16 @@ type Server struct {
 }
 
 // New creates an HTTP server with readiness, correlation and telemetry.
-func New(cfg Config, logger *zap.Logger, apiHandler openapi.StrictServerInterface) *Server {
+func New(
+	cfg Config,
+	logger *zap.Logger,
+	apiHandler openapi.StrictServerInterface,
+	apiKeyVerifier APIKeyVerifier,
+) *Server {
 	mux := http.NewServeMux()
-	strictHandler := openapi.NewStrictHandlerWithOptions(apiHandler, nil, openapi.StrictHTTPServerOptions{
+	strictHandler := openapi.NewStrictHandlerWithOptions(apiHandler, []openapi.StrictMiddlewareFunc{
+		apiKeyAuthenticationMiddleware(apiKeyVerifier),
+	}, openapi.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  requestErrorHandler,
 		ResponseErrorHandlerFunc: responseErrorHandler(logger),
 	})
@@ -179,6 +186,10 @@ func requestErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 // id and the client receives only a generic body.
 func responseErrorHandler(logger *zap.Logger) func(w http.ResponseWriter, r *http.Request, err error) {
 	return func(w http.ResponseWriter, r *http.Request, err error) {
+		if errors.Is(err, ErrUnauthorized) {
+			writeError(w, r, http.StatusUnauthorized, codeUnauthorized, ErrUnauthorized.Error())
+			return
+		}
 		if errors.Is(err, ErrNotServed) {
 			writeError(w, r, http.StatusNotImplemented, codeNotImplemented, ErrNotServed.Error())
 			return

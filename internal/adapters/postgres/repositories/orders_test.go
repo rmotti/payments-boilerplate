@@ -2,16 +2,12 @@ package repositories
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pressly/goose/v3"
-	app "github.com/rmotti/payments-boilerplate/internal/application/orders"
 	domain "github.com/rmotti/payments-boilerplate/internal/domain/orders"
 	"github.com/rmotti/payments-boilerplate/internal/platform/config"
 	"github.com/rmotti/payments-boilerplate/internal/platform/database"
@@ -79,8 +75,12 @@ func TestOrderRepositoryCreateIntegration(t *testing.T) {
 	}
 
 	repository := NewOrderRepository(db.GORM)
-	if err := repository.Create(ctx, order); err != nil {
+	persisted, created, err := repository.CreateOrGet(ctx, order)
+	if err != nil {
 		t.Fatalf("Create() error = %v", err)
+	}
+	if !created || persisted != order {
+		t.Fatalf("CreateOrGet() = %#v, %v; want created original order", persisted, created)
 	}
 
 	var amount int64
@@ -108,25 +108,16 @@ func TestOrderRepositoryCreateIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create duplicate domain order: %v", err)
 	}
-	if err := repository.Create(ctx, duplicate); !errors.Is(err, app.ErrIdempotencyKeyConflict) {
-		t.Fatalf("Create() duplicate error = %v, want %v", err, app.ErrIdempotencyKeyConflict)
+	persisted, created, err = repository.CreateOrGet(ctx, duplicate)
+	if err != nil {
+		t.Fatalf("CreateOrGet() replay error = %v", err)
 	}
-}
+	if created || persisted.ID != order.ID {
+		t.Fatalf("CreateOrGet() replay = %#v, %v; want original order", persisted, created)
+	}
 
-func TestIsUniqueViolation(t *testing.T) {
-	t.Parallel()
-
-	conflict := &pgconn.PgError{Code: "23505", ConstraintName: "orders_idempotency_key_key"}
-	if !isUniqueViolation(fmt.Errorf("wrapped: %w", conflict), "orders_idempotency_key_key") {
-		t.Fatal("isUniqueViolation() = false for a wrapped orders_idempotency_key_key violation")
-	}
-	if isUniqueViolation(&pgconn.PgError{Code: "23505", ConstraintName: "orders_pkey"}, "orders_idempotency_key_key") {
-		t.Fatal("isUniqueViolation() = true for a different constraint")
-	}
-	if isUniqueViolation(&pgconn.PgError{Code: "23503", ConstraintName: "orders_idempotency_key_key"}, "orders_idempotency_key_key") {
-		t.Fatal("isUniqueViolation() = true for a non-unique error code")
-	}
-	if isUniqueViolation(errors.New("plain"), "orders_idempotency_key_key") {
-		t.Fatal("isUniqueViolation() = true for a plain error")
+	found, err := repository.Get(ctx, order.ID)
+	if err != nil || found != order {
+		t.Fatalf("Get() = %#v, %v; want %#v", found, err, order)
 	}
 }
