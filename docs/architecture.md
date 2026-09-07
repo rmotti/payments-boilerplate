@@ -85,11 +85,38 @@ idempotente. API, relay e consumer pertencem ao mesmo código-base.
 
 ### Integrador do boilerplate
 
-- Consumir a API por seu próprio backend, frontend ou aplicativo.
+- Consumir as rotas de negócio pelo seu próprio backend; uma credencial da API
+  nunca deve ser distribuída em frontend ou aplicativo do consumidor.
 - Configurar credenciais e endpoints corretamente.
 - Avaliar suas obrigações PCI DSS, LGPD e demais normas aplicáveis.
 - Definir retenção, observabilidade, resposta a incidentes e controle de acesso.
 - Verificar os requisitos do adquirente e do provedor escolhidos.
+
+## Limites de confiança e acesso
+
+Cada implantação atende um único integrador e possui banco, credenciais Stripe
+e chaves de acesso próprios. Não há isolamento multi-tenant dentro da aplicação:
+depois de autenticado, o integrador pode operar todos os pedidos da instalação.
+
+```text
+backend do integrador -- X-API-Key ------> rotas de pedido e checkout
+Stripe --------------- Stripe-Signature -> webhook
+infraestrutura -------- rede/probe ------> health
+desenvolvedor ---------- ambiente local --> Swagger UI
+```
+
+A camada HTTP aplicará autenticação por API key às operações de negócio. A
+política nega acesso por padrão e libera explicitamente apenas health e os
+endpoints com autenticação própria, como o webhook assinado. O domínio e os
+casos de uso não conhecem headers ou credenciais.
+
+O Swagger UI e o documento OpenAPI servido pela aplicação ficam disponíveis em
+desenvolvimento e desabilitados por padrão em produção. TLS, gestão de secrets e
+controles de borda continuam sob responsabilidade de quem implanta o projeto.
+
+O modelo completo, alternativas e limitações estão no
+[ADR 0010](decisions/0010-route-access-model.md). Sua implementação é o próximo
+item do roadmap; esta seção não afirma que o runtime atual já exige a chave.
 
 ## Modelo de domínio mínimo
 

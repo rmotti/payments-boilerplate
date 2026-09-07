@@ -40,8 +40,10 @@ múltiplos provedores.
 
 - [x] Criar esquema de `Order`, `Payment`, `PaymentAttempt` e `WebhookEvent`.
 - [x] Criar pedido com valor calculado no servidor.
-- [ ] Definir o modelo de acesso às rotas e documentar quais operações permanecem públicas.
-- [ ] Proteger criação, checkout e consulta com autenticação da integração e autorização sobre o pedido.
+- [x] Definir o modelo de acesso às rotas e documentar quais operações
+  permanecem públicas.
+- [ ] Proteger criação, checkout e consulta com autenticação da integração e
+  autorização sobre o pedido.
 - [ ] Integrar Stripe Checkout hospedado em sandbox com cartão em BRL.
 - [ ] Implementar idempotência da criação.
 - [ ] Relacionar a sessão da Stripe ao pedido e à tentativa locais.

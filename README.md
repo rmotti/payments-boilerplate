@@ -106,6 +106,13 @@ fazem parte do MVP.
 Assinaturas, marketplaces, split, repasses e múltiplos provedores não fazem
 parte da primeira versão.
 
+Cada instalação atende um único integrador e usa seu próprio banco, conta
+Stripe e credenciais. O modelo aprovado exige `X-API-Key` nas rotas de negócio,
+mantém health público, autentica webhooks pela assinatura da Stripe e desabilita
+o Swagger por padrão em produção. Essa política está documentada, mas o
+middleware ainda será implementado no próximo item do roadmap; até lá, as rotas
+existentes não devem ser expostas diretamente à internet.
+
 ## Jornada da pessoa desenvolvedora
 
 A pessoa usuária deste projeto é quem desenvolve o sistema que venderá o produto
@@ -206,6 +213,7 @@ o Swagger UI representa no diagrama.
 - [Decisão arquitetural: GORM e sqlc](docs/decisions/0007-gorm-and-sqlc.md)
 - [Decisão arquitetural: Zap e OpenTelemetry](docs/decisions/0008-observability-stack.md)
 - [Decisão arquitetural: Railway](docs/decisions/0009-railway-deployment.md)
+- [Decisão arquitetural: acesso às rotas](docs/decisions/0010-route-access-model.md)
 - [Guia de contribuição](CONTRIBUTING.md)
 - [Política de suporte](SUPPORT.md)
 - [Changelog](CHANGELOG.md)
@@ -226,6 +234,8 @@ o Swagger UI representa no diagrama.
 | Checkout hospedado | Decidido |
 | Primeiro provedor | Stripe Checkout |
 | Meio inicial | Cartão em BRL; Pix após validar o fluxo assíncrono |
+| Modelo de implantação | Um integrador por instalação |
+| Acesso às rotas de negócio | API key do integrador; implementação pendente |
 | Licença open source | Apache-2.0 |
 | Versionamento | SemVer; série `v0.x` experimental |
 | Commits e pull requests | Conventional Commits + squash merge |

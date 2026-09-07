@@ -59,6 +59,8 @@ provedor.
 - Pagamento por cartão em BRL; Pix será habilitado depois que o processamento
   assíncrono estiver validado.
 - Uso de idempotência na criação de operações remotas.
+- Autenticação do backend integrador nas rotas de negócio de uma implantação
+  self-hosted e single-integrator.
 - Endpoint para consultar o estado atual do pedido.
 - Recepção e validação criptográfica de webhooks.
 - Inbox persistente para deduplicar, auditar e reprocessar eventos.
@@ -81,6 +83,7 @@ provedor.
 - Painel administrativo completo.
 - Frontend de demonstração próprio.
 - Login e cadastro de consumidores.
+- Multi-tenancy e compartilhamento de uma instalação entre integradores.
 - Multi-moeda e conversão cambial.
 - Chargebacks e automações de disputa.
 - Aplicativos móveis.
