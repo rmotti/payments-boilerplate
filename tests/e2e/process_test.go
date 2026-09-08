@@ -18,18 +18,26 @@ import (
 	"time"
 )
 
+const (
+	binaryBuildTimeout = 2 * time.Minute
+	binaryExitTimeout  = 10 * time.Second
+)
+
 func TestAPIBinaryRejectsIncompleteProviderConfiguration(t *testing.T) {
 	root := repositoryRoot(t)
 	binary := filepath.Join(t.TempDir(), "api-e2e")
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	build := exec.CommandContext(ctx, "go", "build", "-o", binary, "./cmd/api")
+	buildCtx, cancelBuild := context.WithTimeout(context.Background(), binaryBuildTimeout)
+	build := exec.CommandContext(buildCtx, "go", "build", "-o", binary, "./cmd/api")
 	build.Dir = root
 	if output, err := build.CombinedOutput(); err != nil {
+		cancelBuild()
 		t.Fatalf("build API binary: %v\n%s", err, output)
 	}
+	cancelBuild()
 
-	command := exec.CommandContext(ctx, binary)
+	processCtx, cancelProcess := context.WithTimeout(context.Background(), binaryExitTimeout)
+	defer cancelProcess()
+	command := exec.CommandContext(processCtx, binary)
 	command.Dir = root
 	command.Env = replaceEnvironment(os.Environ(), map[string]string{
 		"DATABASE_URL":         "postgres://payments:payments_local@127.0.0.1:55432/payments?sslmode=disable",
@@ -54,7 +62,7 @@ func TestWorkerBinaryConfigurationAndSignalShutdown(t *testing.T) {
 	h := newHarness(t, false)
 	root := repositoryRoot(t)
 	binary := filepath.Join(t.TempDir(), "worker-e2e")
-	buildCtx, cancelBuild := context.WithTimeout(context.Background(), 45*time.Second)
+	buildCtx, cancelBuild := context.WithTimeout(context.Background(), binaryBuildTimeout)
 	defer cancelBuild()
 	build := exec.CommandContext(buildCtx, "go", "build", "-o", binary, "./cmd/worker")
 	build.Dir = root

@@ -125,8 +125,8 @@ func TestHTTPSpansNeverCarryTheFailureSentinel(t *testing.T) {
 			t.Fatalf("span name = %q, leaked the sentinel credential", span.Name)
 		}
 		for _, attr := range span.Attributes {
-			if strings.Contains(attr.Value.Emit(), sentinel) {
-				t.Fatalf("span attribute %q = %q, leaked the sentinel credential", attr.Key, attr.Value.Emit())
+			if strings.Contains(attr.Value.String(), sentinel) {
+				t.Fatalf("span attribute %q = %q, leaked the sentinel credential", attr.Key, attr.Value.String())
 			}
 		}
 		for _, event := range span.Events {
@@ -134,8 +134,8 @@ func TestHTTPSpansNeverCarryTheFailureSentinel(t *testing.T) {
 				t.Fatalf("span event name = %q, leaked the sentinel credential", event.Name)
 			}
 			for _, attr := range event.Attributes {
-				if strings.Contains(attr.Value.Emit(), sentinel) {
-					t.Fatalf("span event attribute %q = %q, leaked the sentinel credential", attr.Key, attr.Value.Emit())
+				if strings.Contains(attr.Value.String(), sentinel) {
+					t.Fatalf("span event attribute %q = %q, leaked the sentinel credential", attr.Key, attr.Value.String())
 				}
 			}
 		}
