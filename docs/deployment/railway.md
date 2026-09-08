@@ -64,7 +64,12 @@ ignorado e o peer é tratado como cliente, que é o comportamento seguro.
 
 `PORT` é fornecida automaticamente pela Railway. Quando houver um collector
 OTLP no ambiente, habilite `OTEL_ENABLED` e configure
-`OTEL_EXPORTER_OTLP_ENDPOINT` com sua URL base HTTP.
+`OTEL_EXPORTER_OTLP_ENDPOINT` com sua URL base HTTP. Com a exportação ligada, o
+worker também amostra backlog e profundidade de fila em background;
+`METRICS_SAMPLE_INTERVAL` e `METRICS_SAMPLE_TIMEOUT` controlam essa coleta e o
+timeout precisa ser menor que o intervalo. Os defaults de 15 s e 5 s servem a
+um deploy pequeno. Consulte [métricas](../metrics.md) para os instrumentos
+publicados e os limiares iniciais de alerta.
 
 Execute migrations apenas no pre-deploy da API. Isso evita que API e worker
 tentem migrar o mesmo banco simultaneamente.

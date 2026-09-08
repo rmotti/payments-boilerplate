@@ -24,6 +24,7 @@ import (
 	"github.com/rmotti/payments-boilerplate/internal/platform/database"
 	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/platform/logging"
+	"github.com/rmotti/payments-boilerplate/internal/platform/metrics"
 	"github.com/rmotti/payments-boilerplate/internal/platform/retry"
 	"github.com/rmotti/payments-boilerplate/internal/platform/telemetry"
 	httpserver "github.com/rmotti/payments-boilerplate/internal/transport/http"
@@ -99,6 +100,15 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		}
 	}()
 
+	// Built after telemetry, so the instruments come from whichever
+	// MeterProvider it installed. With OTLP disabled that is the global no-op
+	// provider: the observers are wired identically and record nothing, so no
+	// use case has to know whether metrics are enabled.
+	appMetrics, err := metrics.New()
+	if err != nil {
+		return fmt.Errorf("build metrics: %w", err)
+	}
+
 	startupCtx, cancelStartup := context.WithTimeout(ctx, cfg.StartupTimeout)
 	defer cancelStartup()
 	var db *database.Database
@@ -115,10 +125,15 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		}
 	}()
 
+	if err := metrics.RegisterPoolMetrics(appMetrics, db.SQL, logger); err != nil {
+		return fmt.Errorf("instrument postgres pool: %w", err)
+	}
+
 	healthService := health.New(cfg.ServiceName, buildinfo.Version, map[string]health.Checker{
 		"postgres": db.Ping,
 	})
-	orderService := orderapp.NewService(catalog.Demo(), repositories.NewOrderRepository(db.GORM))
+	orderService := orderapp.NewService(catalog.Demo(), repositories.NewOrderRepository(db.GORM),
+		orderapp.WithObserver(metrics.NewOrderObserver(appMetrics)))
 
 	provider := opts.PaymentProvider
 	if provider == nil {
@@ -128,6 +143,7 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		orderService,
 		repositories.NewPaymentRepository(db.GORM),
 		provider,
+		paymentapp.WithObserver(metrics.NewCheckoutObserver(appMetrics)),
 	)
 
 	verifier := opts.WebhookVerifier
@@ -135,7 +151,8 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		verifier = stripeadapter.NewWebhook(cfg.StripeWebhookSecret)
 	}
 	webhookRepository := repositories.NewWebhookRepository(db.SQL)
-	webhookService := webhookapp.NewService(verifier, webhookRepository)
+	webhookService := webhookapp.NewService(verifier, webhookRepository,
+		webhookapp.WithObserver(metrics.NewWebhookObserver(appMetrics)))
 	operationsService := webhookapp.NewOperationsService(webhookRepository)
 
 	apiHandler := httpserver.NewAPIHandler(healthService, orderService, checkoutService, webhookService, operationsService)

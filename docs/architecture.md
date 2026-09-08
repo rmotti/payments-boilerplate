@@ -317,8 +317,17 @@ PostgreSQL e RabbitMQ permanecem na rede privada do projeto, e o broker usa
 volume persistente. Migrations rodam como etapa anterior ao deploy da API.
 
 O ambiente local pode habilitar Grafana, Prometheus, Tempo, Loki e o Collector
-por meio do profile de observabilidade do Docker Compose. Em produção, o destino
-OTLP é configuração externa e não faz parte do domínio.
+por meio do profile de observabilidade do Docker Compose, que também provisiona
+o dashboard versionado do pipeline. Em produção, o destino OTLP é configuração
+externa e não faz parte do domínio.
+
+As métricas da aplicação vivem em `internal/platform/metrics`, único pacote fora
+de `internal/platform/telemetry` que importa a API de métricas do OpenTelemetry.
+Ele implementa as interfaces de observer que aplicação e adapters já declaravam,
+de modo que domínio e casos de uso permanecem sem dependência de telemetria.
+Toda label passa por uma allowlist explícita, e estado como backlog e
+profundidade de fila é amostrado em background, nunca dentro de um callback de
+coleta. Ver [ADR 0015](decisions/0015-application-metrics-and-cardinality.md).
 
 Depois de uma implementação real e estável, as fronteiras reutilizáveis podem
 ser extraídas:

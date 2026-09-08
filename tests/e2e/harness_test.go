@@ -133,7 +133,21 @@ func repositoryRoot(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
 }
 
+// metricsRuntimeOverrides lets one scenario adjust the configuration every
+// process is started with. It exists for the metrics suite, which needs OTLP
+// export enabled and fast sampling; every other scenario leaves it nil and
+// gets the configuration above unchanged.
+var metricsRuntimeOverrides func(*config.Config)
+
 func (h *harness) runtimeConfig(service, address string) config.Config {
+	cfg := h.baseRuntimeConfig(service, address)
+	if metricsRuntimeOverrides != nil {
+		metricsRuntimeOverrides(&cfg)
+	}
+	return cfg
+}
+
+func (h *harness) baseRuntimeConfig(service, address string) config.Config {
 	return config.Config{
 		ServiceName: service, Environment: h.environment, HTTPAddress: address,
 		DocsEnabled: h.docsEnabled,

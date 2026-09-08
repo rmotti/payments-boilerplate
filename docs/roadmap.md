@@ -70,7 +70,7 @@ múltiplos provedores.
 - [ ] Adicionar dados e comandos reproduzíveis de sandbox.
 - [x] Verificar que exemplos OpenAPI correspondem às respostas reais.
 - [x] Testar interrupções entre PostgreSQL, relay, RabbitMQ e consumer.
-- [ ] Publicar métricas de outbox, filas, retries e DLQ.
+- [x] Publicar métricas de outbox, filas, retries e DLQ.
 - [ ] Aplicar rate limiting às operações públicas e aos endpoints sujeitos a abuso.
 - [x] Desabilitar ou proteger o Swagger UI fora do ambiente de desenvolvimento.
 - [ ] Revisar logs, secrets e tratamento de dados pessoais.

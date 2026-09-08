@@ -42,6 +42,11 @@ services:
       - "${GRAFANA_PORT:-3000}:3000"
       - "${OTLP_GRPC_PORT:-4317}:4317"
       - "${OTLP_HTTP_PORT:-4318}:4318"
+    volumes:
+      # The versioned dashboard is provisioned read-only, so a local edit in
+      # Grafana never becomes the source of truth for the file in the repo.
+      - ./deployments/observability/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/payments.yaml:ro
+      - ./deployments/observability/payments-pipeline.json:/otel-lgtm/grafana/conf/provisioning/dashboards/payments/payments-pipeline.json:ro
 
   migrate:
     profiles: ["app"]

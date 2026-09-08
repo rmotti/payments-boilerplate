@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	payments "github.com/rmotti/payments-boilerplate/internal/domain/payments"
 )
@@ -57,6 +58,10 @@ type Handling struct {
 }
 
 // Observer receives what the consumer would otherwise keep to itself.
+//
+// An Observer may also implement HandlingObserver to receive one report per
+// handled message, with the timing and the transitions a metrics
+// implementation needs.
 type Observer interface {
 	// Applied reports a committed transition.
 	Applied(eventID string, effect Effect)
@@ -66,6 +71,50 @@ type Observer interface {
 	Retrying(eventID string, attempts int, cause error)
 	// DeadLettered reports a message that will not be tried again.
 	DeadLettered(eventID string, attempts int, cause error)
+}
+
+// Entity names the aggregate row a transition moved.
+type Entity string
+
+// Entities the consumer transitions.
+const (
+	EntityOrder   Entity = "order"
+	EntityPayment Entity = "payment"
+	EntityAttempt Entity = "attempt"
+)
+
+// Transition is one state change the consumer committed.
+type Transition struct {
+	Entity Entity
+	From   string
+	To     string
+}
+
+// Report is the full account of one Handle call.
+type Report struct {
+	// Disposition is what Handle answered. It is meaningless when Err is set.
+	Disposition Disposition
+	// Duration covers the whole call, including recording a failure.
+	Duration time.Duration
+	// Applied reports whether a transition was written.
+	Applied bool
+	// AlreadyProcessed distinguishes a redelivery no-op, where the inbox row
+	// was already closed, from a stale event the matrix chose to ignore.
+	AlreadyProcessed bool
+	// Transitions lists the state changes committed, in the order they were
+	// written. It is empty unless Applied is true.
+	Transitions []Transition
+	// Cause is why the message is retried or dead-lettered.
+	Cause error
+	// Err is set when the outcome could not be recorded and the message is
+	// left for redelivery.
+	Err error
+}
+
+// HandlingObserver is the optional extension of Observer that receives one
+// Report per message, whatever the outcome.
+type HandlingObserver interface {
+	Handled(eventID string, report Report)
 }
 
 // Config tunes how long the consumer keeps trying.
@@ -91,7 +140,7 @@ func (c Config) withDefaults() Config {
 type Service struct {
 	repository  Repository
 	interpreter Interpreter
-	observer    Observer
+	observers   []Observer
 	config      Config
 	testHooks   TestHooks
 }
@@ -107,9 +156,14 @@ type TestHooks struct {
 	AfterCommit func(eventID string, result Result) error
 }
 
-// WithObserver reports what each message produced.
+// WithObserver reports what each message produced. It may be given more than
+// once; observers are notified in the order they were added.
 func WithObserver(observer Observer) Option {
-	return func(s *Service) { s.observer = observer }
+	return func(s *Service) {
+		if observer != nil {
+			s.observers = append(s.observers, observer)
+		}
+	}
 }
 
 // WithTestHooks installs deterministic fault injection for tests. Application
@@ -139,11 +193,27 @@ func (s *Service) Config() Config { return s.config }
 // dead-letter publication. An error here means the classification itself could
 // not be recorded, which is a reason to leave the message unacknowledged.
 func (s *Service) Handle(ctx context.Context, eventID string) (Handling, error) {
+	started := time.Now()
+	handling, report, err := s.handle(ctx, eventID)
+	report.Duration = time.Since(started)
+	report.Err = err
+	s.eachHandlingObserver(func(observer HandlingObserver) {
+		observer.Handled(eventID, report)
+	})
+	return handling, err
+}
+
+func (s *Service) handle(ctx context.Context, eventID string) (Handling, Report, error) {
 	// outcome is captured by both closures below. Interpreting happens inside
 	// the transaction, after the inbox row is locked, so a redelivery that
 	// finds the event already processed never parses a payload at all.
 	var outcome SessionOutcome
 	var applied Effect
+	// decided records whether the matrix was consulted at all. When it was
+	// not, the repository found the entry already processed: that is the
+	// redelivery no-op, as opposed to a stale event the matrix ignored.
+	var decided bool
+	var locked Aggregate
 
 	result, err := s.repository.Process(ctx, eventID,
 		func(entry InboxEntry) (Reference, error) {
@@ -164,6 +234,7 @@ func (s *Service) Handle(ctx context.Context, eventID string) (Handling, error) 
 			}, nil
 		},
 		func(_ InboxEntry, aggregate Aggregate) (Effect, error) {
+			decided, locked = true, aggregate
 			effect, err := decideEffect(outcome, aggregate, string(s.interpreter.Provider()))
 			applied = effect
 			return effect, err
@@ -174,22 +245,66 @@ func (s *Service) Handle(ctx context.Context, eventID string) (Handling, error) 
 	}
 	if s.testHooks.AfterCommit != nil {
 		if err := s.testHooks.AfterCommit(eventID, result); err != nil {
-			return Handling{}, fmt.Errorf("after consumer commit: %w", err)
+			return Handling{}, Report{}, fmt.Errorf("after consumer commit: %w", err)
 		}
 	}
 
-	if s.observer != nil {
+	s.eachObserver(func(observer Observer) {
 		if result.Applied {
-			s.observer.Applied(eventID, applied)
+			observer.Applied(eventID, applied)
 		} else {
-			s.observer.NoOp(eventID, result.Note)
+			observer.NoOp(eventID, result.Note)
 		}
+	})
+	report := Report{
+		Disposition:      DispositionDone,
+		Applied:          result.Applied,
+		AlreadyProcessed: !result.Applied && !decided,
+	}
+	if result.Applied {
+		report.Transitions = transitions(locked, applied)
 	}
 	return Handling{
 		Disposition: DispositionDone,
 		Applied:     result.Applied,
 		Note:        result.Note,
-	}, nil
+	}, report, nil
+}
+
+// transitions lists what the effect moved, from the state read under the lock
+// to the state written.
+func transitions(aggregate Aggregate, effect Effect) []Transition {
+	var moved []Transition
+	if effect.AttemptStatus != "" {
+		moved = append(moved, Transition{
+			Entity: EntityAttempt, From: string(aggregate.AttemptStatus), To: string(effect.AttemptStatus),
+		})
+	}
+	if effect.PaymentStatus != "" {
+		moved = append(moved, Transition{
+			Entity: EntityPayment, From: string(aggregate.PaymentStatus), To: string(effect.PaymentStatus),
+		})
+	}
+	if effect.OrderPaid {
+		moved = append(moved, Transition{
+			Entity: EntityOrder, From: aggregate.OrderStatus, To: "paid",
+		})
+	}
+	return moved
+}
+
+func (s *Service) eachObserver(notify func(Observer)) {
+	for _, observer := range s.observers {
+		notify(observer)
+	}
+}
+
+func (s *Service) eachHandlingObserver(notify func(HandlingObserver)) {
+	for _, observer := range s.observers {
+		if extended, ok := observer.(HandlingObserver); ok {
+			notify(extended)
+		}
+	}
 }
 
 // decideEffect checks the event against the locked aggregate and asks the
@@ -244,7 +359,7 @@ func decideEffect(outcome SessionOutcome, aggregate Aggregate, expectedProvider 
 // failure wastes a few attempts and ends in the dead-letter queue anyway,
 // while treating a transient failure as permanent abandons a financial event
 // because the database blinked.
-func (s *Service) classify(ctx context.Context, eventID string, cause error) (Handling, error) {
+func (s *Service) classify(ctx context.Context, eventID string, cause error) (Handling, Report, error) {
 	terminal := isTerminal(cause)
 
 	attempts, failed, recordErr := s.repository.RecordFailure(
@@ -253,7 +368,8 @@ func (s *Service) classify(ctx context.Context, eventID string, cause error) (Ha
 		// Nothing was recorded, so the attempt count is unknown and the
 		// message must not be acknowledged. Returning the error leaves it
 		// unacknowledged and the broker redelivers it.
-		return Handling{}, fmt.Errorf("record consumer failure: %w (cause: %w)", recordErr, cause)
+		return Handling{}, Report{Cause: cause},
+			fmt.Errorf("record consumer failure: %w (cause: %w)", recordErr, cause)
 	}
 
 	// A failure that could not be counted, because there is no inbox row to
@@ -275,16 +391,18 @@ func (s *Service) classify(ctx context.Context, eventID string, cause error) (Ha
 	}
 
 	if terminal {
-		if s.observer != nil {
-			s.observer.DeadLettered(eventID, attempts, cause)
-		}
-		return Handling{Disposition: DispositionDead, Attempts: attempts, Cause: cause}, nil
+		s.eachObserver(func(observer Observer) {
+			observer.DeadLettered(eventID, attempts, cause)
+		})
+		return Handling{Disposition: DispositionDead, Attempts: attempts, Cause: cause},
+			Report{Disposition: DispositionDead, Cause: cause}, nil
 	}
 
-	if s.observer != nil {
-		s.observer.Retrying(eventID, attempts, cause)
-	}
-	return Handling{Disposition: DispositionRetry, Attempts: attempts, Cause: cause}, nil
+	s.eachObserver(func(observer Observer) {
+		observer.Retrying(eventID, attempts, cause)
+	})
+	return Handling{Disposition: DispositionRetry, Attempts: attempts, Cause: cause},
+		Report{Disposition: DispositionRetry, Cause: cause}, nil
 }
 
 // terminalErrors never improve with another attempt: the stored bytes, the

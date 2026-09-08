@@ -111,6 +111,9 @@ func (c Config) withDefaults() Config {
 }
 
 // Observer receives what the relay would otherwise keep to itself.
+//
+// An Observer may also implement CycleObserver to receive every publication
+// and every cycle, not only the ones that need attention.
 type Observer interface {
 	// Stuck reports a message that keeps failing. The relay goes on retrying
 	// it; this exists so an operator finds out before a customer does.
@@ -123,11 +126,96 @@ type Observer interface {
 	LeaseLost(messageID string, cause error)
 }
 
+// Outcome is what one publication attempt ended as.
+type Outcome int
+
+// Publication outcomes.
+const (
+	// OutcomePublished means the broker confirmed and the row was settled.
+	OutcomePublished Outcome = iota
+	// OutcomeRetrying means a transient failure scheduled the message again.
+	OutcomeRetrying
+	// OutcomeFailed means a permanent failure abandoned the message.
+	OutcomeFailed
+	// OutcomeLeaseLost means the outcome could not be recorded because the
+	// lease had expired; another instance owns the message now.
+	OutcomeLeaseLost
+)
+
+// String makes outcomes readable in logs and metrics.
+func (o Outcome) String() string {
+	switch o {
+	case OutcomePublished:
+		return "published"
+	case OutcomeRetrying:
+		return "retrying"
+	case OutcomeFailed:
+		return "failed"
+	case OutcomeLeaseLost:
+		return "lease_lost"
+	default:
+		return "unknown"
+	}
+}
+
+// Publication reports one publish attempt after its outcome was recorded.
+type Publication struct {
+	Outcome Outcome
+	// Attempts is the message's attempt count including this one.
+	Attempts int
+	// Duration is how long the broker took to confirm or refuse the message.
+	// It does not include settling the row.
+	Duration time.Duration
+	// Cause is the publish error behind a retrying or failed outcome, and the
+	// settlement error behind a lost lease. It is nil when published.
+	Cause error
+}
+
+// CycleStage names where a cycle failed.
+type CycleStage int
+
+// Cycle stages.
+const (
+	// StageLease means the batch could not be claimed.
+	StageLease CycleStage = iota + 1
+	// StageSettlement means an outcome could not be recorded in PostgreSQL.
+	StageSettlement
+)
+
+// String makes stages readable in logs and metrics.
+func (s CycleStage) String() string {
+	switch s {
+	case StageLease:
+		return "lease"
+	case StageSettlement:
+		return "settlement"
+	default:
+		return "unknown"
+	}
+}
+
+// Cycle reports one RunOnce call.
+type Cycle struct {
+	Result   Result
+	Duration time.Duration
+	// Err is the cycle failure, if any, and Stage says where it happened.
+	Err   error
+	Stage CycleStage
+}
+
+// CycleObserver is the optional extension of Observer that receives every
+// publication and every cycle. It is what a metrics implementation needs; a
+// logging implementation usually does not want the volume.
+type CycleObserver interface {
+	PublicationSettled(publication Publication)
+	CycleCompleted(cycle Cycle)
+}
+
 // Service publishes outbox messages until its context is cancelled.
 type Service struct {
 	repository Repository
 	publisher  Publisher
-	observer   Observer
+	observers  []Observer
 	owner      string
 	config     Config
 	testHooks  TestHooks
@@ -149,9 +237,14 @@ type TestHooks struct {
 	BeforeSettlement func(message domain.Message) error
 }
 
-// WithObserver reports stuck and abandoned messages.
+// WithObserver reports stuck and abandoned messages. It may be given more
+// than once; observers are notified in the order they were added.
 func WithObserver(observer Observer) Option {
-	return func(s *Service) { s.observer = observer }
+	return func(s *Service) {
+		if observer != nil {
+			s.observers = append(s.observers, observer)
+		}
+	}
 }
 
 // WithTestHooks installs deterministic fault injection for tests. Application
@@ -178,6 +271,17 @@ func (s *Service) Config() Config { return s.config }
 
 // RunOnce leases one batch, publishes it and records each outcome.
 func (s *Service) RunOnce(ctx context.Context) (Result, error) {
+	started := time.Now()
+	result, stage, err := s.runOnce(ctx)
+	s.eachCycleObserver(func(observer CycleObserver) {
+		observer.CycleCompleted(Cycle{
+			Result: result, Duration: time.Since(started), Err: err, Stage: stage,
+		})
+	})
+	return result, err
+}
+
+func (s *Service) runOnce(ctx context.Context) (Result, CycleStage, error) {
 	// Start a monotonic, conservative clock before PostgreSQL creates the lease.
 	// The database deadline will therefore be slightly later than this local
 	// window regardless of clock skew between the database and this process.
@@ -187,7 +291,7 @@ func (s *Service) RunOnce(ctx context.Context) (Result, error) {
 
 	leases, err := s.repository.Lease(publicationCtx, s.owner, s.config.BatchSize, s.config.LeaseDuration)
 	if err != nil {
-		return Result{}, fmt.Errorf("lease outbox batch: %w", err)
+		return Result{}, StageLease, fmt.Errorf("lease outbox batch: %w", err)
 	}
 
 	result := Result{Leased: len(leases)}
@@ -195,44 +299,55 @@ func (s *Service) RunOnce(ctx context.Context) (Result, error) {
 		// Stop early on shutdown: the remaining leases simply expire and are
 		// picked up again, which is cheaper than racing a cancelled context.
 		if ctx.Err() != nil || publicationCtx.Err() != nil {
-			return result, nil
+			return result, 0, nil
 		}
 		outcome, err := s.publishOne(ctx, publicationCtx, lease)
 		if err != nil {
-			return result, err
+			return result, StageSettlement, err
 		}
 		switch outcome {
-		case outcomePublished:
+		case OutcomePublished:
 			result.Published++
-		case outcomeRetrying:
+		case OutcomeRetrying:
 			result.Retrying++
-		case outcomeFailed:
+		case OutcomeFailed:
 			result.Failed++
-		case outcomeLeaseLost:
+		case OutcomeLeaseLost:
 			result.LeasesLost++
 		}
 	}
-	return result, nil
+	return result, 0, nil
 }
 
-type outcome int
-
-const (
-	outcomePublished outcome = iota
-	outcomeRetrying
-	outcomeFailed
-	outcomeLeaseLost
-)
-
-func (s *Service) publishOne(ctx, publicationCtx context.Context, lease Lease) (outcome, error) {
+func (s *Service) publishOne(ctx, publicationCtx context.Context, lease Lease) (Outcome, error) {
+	started := time.Now()
 	// publicationCtx is monotonic and ends before the database lease. Interpreting
 	// the absolute PostgreSQL timestamp with the worker's wall clock would bring
 	// clock skew back into the decision this deadline is meant to protect.
 	publishErr := s.publisher.Publish(publicationCtx, lease.Message)
+	publishDuration := time.Since(started)
+	attempts := lease.Attempts + 1
+
+	outcome, cause, err := s.settle(ctx, lease, publishErr, attempts)
+	if err != nil {
+		return 0, err
+	}
+	s.eachCycleObserver(func(observer CycleObserver) {
+		observer.PublicationSettled(Publication{
+			Outcome: outcome, Attempts: attempts, Duration: publishDuration, Cause: cause,
+		})
+	})
+	return outcome, nil
+}
+
+// settle records the outcome of one publish attempt. The returned cause is
+// what explains a non-published outcome; the error means the cycle itself
+// failed and nothing was recorded.
+func (s *Service) settle(ctx context.Context, lease Lease, publishErr error, attempts int) (Outcome, error, error) {
 	if publishErr == nil {
 		if s.testHooks.BeforeSettlement != nil {
 			if err := s.testHooks.BeforeSettlement(lease.Message); err != nil {
-				return 0, fmt.Errorf("before outbox settlement: %w", err)
+				return 0, nil, fmt.Errorf("before outbox settlement: %w", err)
 			}
 		}
 		// Settling uses the parent context: the publication already happened,
@@ -240,10 +355,8 @@ func (s *Service) publishOne(ctx, publicationCtx context.Context, lease Lease) (
 		if err := s.repository.Published(ctx, s.owner, lease.Message.ID); err != nil {
 			return s.leaseOutcome(lease, err, "mark published")
 		}
-		return outcomePublished, nil
+		return OutcomePublished, nil, nil
 	}
-
-	attempts := lease.Attempts + 1
 
 	// Only a classified permanent error abandons a message. Broker downtime,
 	// timeouts and nacks are transient by construction and keep retrying, so
@@ -252,34 +365,50 @@ func (s *Service) publishOne(ctx, publicationCtx context.Context, lease Lease) (
 		if err := s.repository.Failed(ctx, s.owner, lease.Message.ID, publishErr); err != nil {
 			return s.leaseOutcome(lease, err, "mark failed")
 		}
-		if s.observer != nil {
-			s.observer.Abandoned(lease.Message.ID, attempts, publishErr)
-		}
-		return outcomeFailed, nil
+		s.eachObserver(func(observer Observer) {
+			observer.Abandoned(lease.Message.ID, attempts, publishErr)
+		})
+		return OutcomeFailed, publishErr, nil
 	}
 
 	if err := s.repository.Retry(ctx, s.owner, lease.Message.ID, publishErr,
 		s.config.Backoff.Delay(lease.Attempts)); err != nil {
 		return s.leaseOutcome(lease, err, "mark retryable")
 	}
-	if s.observer != nil && attempts >= s.config.AlertAfterAttempts {
-		s.observer.Stuck(lease.Message.ID, attempts, publishErr)
+	if attempts >= s.config.AlertAfterAttempts {
+		s.eachObserver(func(observer Observer) {
+			observer.Stuck(lease.Message.ID, attempts, publishErr)
+		})
 	}
-	return outcomeRetrying, nil
+	return OutcomeRetrying, publishErr, nil
 }
 
 // leaseOutcome separates a lost lease from a real storage failure. A lost
 // lease is not an error of the cycle: the message simply belongs to someone
 // else now, and will be published again. It must still be visible, because it
 // means publishing is outrunning the configured lease.
-func (s *Service) leaseOutcome(lease Lease, err error, action string) (outcome, error) {
+func (s *Service) leaseOutcome(lease Lease, err error, action string) (Outcome, error, error) {
 	if errors.Is(err, ErrLeaseLost) {
-		if s.observer != nil {
-			s.observer.LeaseLost(lease.Message.ID, err)
-		}
-		return outcomeLeaseLost, nil
+		s.eachObserver(func(observer Observer) {
+			observer.LeaseLost(lease.Message.ID, err)
+		})
+		return OutcomeLeaseLost, err, nil
 	}
-	return 0, fmt.Errorf("%s: %w", action, err)
+	return 0, nil, fmt.Errorf("%s: %w", action, err)
+}
+
+func (s *Service) eachObserver(notify func(Observer)) {
+	for _, observer := range s.observers {
+		notify(observer)
+	}
+}
+
+func (s *Service) eachCycleObserver(notify func(CycleObserver)) {
+	for _, observer := range s.observers {
+		if extended, ok := observer.(CycleObserver); ok {
+			notify(extended)
+		}
+	}
 }
 
 // Run relays until ctx is cancelled.

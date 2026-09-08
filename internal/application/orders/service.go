@@ -53,10 +53,21 @@ func (in CreateInput) Validate() error {
 	return domain.ValidateIdempotencyKey(in.IdempotencyKey)
 }
 
+// Observer receives idempotency outcomes the use case would otherwise keep
+// to itself.
+type Observer interface {
+	// Replayed reports a request whose idempotency key matched an equivalent
+	// earlier order, which was returned instead of a new one.
+	Replayed()
+	// Conflicted reports an idempotency key reused with a different request.
+	Conflicted()
+}
+
 // Service implements the order use cases.
 type Service struct {
 	catalog    Catalog
 	repository Repository
+	observer   Observer
 	now        func() time.Time
 	newID      func() (string, error)
 }
@@ -72,6 +83,11 @@ func WithClock(now func() time.Time) Option {
 // WithIDGenerator replaces the identifier generator, for tests.
 func WithIDGenerator(newID func() (string, error)) Option {
 	return func(s *Service) { s.newID = newID }
+}
+
+// WithObserver reports idempotent replays and conflicts.
+func WithObserver(observer Observer) Option {
+	return func(s *Service) { s.observer = observer }
 }
 
 // NewService wires the order use cases to their ports.
@@ -116,7 +132,13 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (domain.Order, err
 		return domain.Order{}, fmt.Errorf("persist order: %w", err)
 	}
 	if !created && (persisted.ProductID != in.ProductID || persisted.Quantity != in.Quantity) {
+		if s.observer != nil {
+			s.observer.Conflicted()
+		}
 		return domain.Order{}, ErrIdempotencyKeyConflict
+	}
+	if !created && s.observer != nil {
+		s.observer.Replayed()
 	}
 	return persisted, nil
 }

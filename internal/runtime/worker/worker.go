@@ -24,6 +24,7 @@ import (
 	"github.com/rmotti/payments-boilerplate/internal/platform/database"
 	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/platform/logging"
+	"github.com/rmotti/payments-boilerplate/internal/platform/metrics"
 	"github.com/rmotti/payments-boilerplate/internal/platform/retry"
 	"github.com/rmotti/payments-boilerplate/internal/platform/telemetry"
 	httpserver "github.com/rmotti/payments-boilerplate/internal/transport/http"
@@ -88,6 +89,16 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		}
 	}()
 
+	// Telemetry is configured first, so the instruments below are created from
+	// whichever MeterProvider it installed. With OTLP disabled that is the
+	// global no-op provider: every instrument is created and every observer is
+	// wired exactly the same way, and nothing is recorded. No code path in the
+	// relay or the consumer asks whether metrics are enabled.
+	appMetrics, err := metrics.New()
+	if err != nil {
+		return fmt.Errorf("build metrics: %w", err)
+	}
+
 	startupCtx, cancelStartup := context.WithTimeout(ctx, cfg.StartupTimeout)
 	defer cancelStartup()
 	var db *database.Database
@@ -103,6 +114,9 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 			logger.Error("postgres shutdown failed", zap.Error(err))
 		}
 	}()
+	if err := metrics.RegisterPoolMetrics(appMetrics, db.SQL, logger); err != nil {
+		return fmt.Errorf("instrument postgres pool: %w", err)
+	}
 
 	// The broker is not required to boot. Messages are already durable in
 	// PostgreSQL, and the connection redials on demand, so a broker that is
@@ -139,6 +153,18 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		}
 	}()
 
+	// Queue depths are sampled over a connection of their own. Two reasons:
+	// a passive declaration of a queue that does not exist closes the channel
+	// it ran on, which must never be the consuming channel, and the sampler's
+	// timeout installs a socket deadline that would otherwise interrupt a
+	// delivery or a republication in flight.
+	samplingBroker := rabbitmq.New(cfg.RabbitMQURL, cfg.ServiceName+"-metrics")
+	defer func() {
+		if err := samplingBroker.Close(); err != nil {
+			logger.Error("metrics sampling connection shutdown failed", zap.Error(err))
+		}
+	}()
+
 	// The relay is a component of the worker, not a process of its own: the
 	// worker is where asynchronous work lives, and the consumer will sit
 	// beside it. Both keep independent configuration and lifecycles, which is
@@ -169,8 +195,9 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		}
 		instanceID = generated
 	}
+	outboxRepository := repositories.NewOutboxRepository(db.SQL)
 	relay := outboxapp.NewService(
-		repositories.NewOutboxRepository(db.SQL),
+		outboxRepository,
 		publisher,
 		instanceID,
 		outboxapp.Config{
@@ -184,6 +211,7 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 			},
 		},
 		outboxapp.WithObserver(relayObserver{logger: logger}),
+		outboxapp.WithObserver(metrics.NewRelayObserver(appMetrics)),
 	)
 
 	retryTiers := make([]rabbitmq.RetryTier, 0, len(cfg.ConsumerRetryDelays))
@@ -194,18 +222,38 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 	if interpreter == nil {
 		interpreter = stripe.NewSession()
 	}
+	eventRepository := repositories.NewEventRepository(db.SQL)
 	consumerService := consumerapp.NewService(
-		repositories.NewEventRepository(db.SQL),
+		eventRepository,
 		interpreter,
 		consumerapp.Config{MaxAttempts: cfg.ConsumerMaxAttempts},
 		consumerapp.WithObserver(consumerObserver{logger: logger}),
+		consumerapp.WithObserver(metrics.NewConsumerObserver(appMetrics)),
 	)
+	// The queue label is bounded by the topology this process declares: the
+	// main queue, the dead letter and one queue per configured retry tier.
+	// Anything else a destination could name becomes "other".
+	knownQueues := []string{rabbitmq.WebhooksQueue, rabbitmq.DeadLetterQueue}
+	for _, tier := range retryTiers {
+		knownQueues = append(knownQueues, tier.Queue())
+	}
 	messageConsumer := rabbitmq.NewConsumer(consumerBroker, republishBroker, consumerService,
 		rabbitmq.ConsumerConfig{
 			Prefetch:    cfg.ConsumerPrefetch,
 			Concurrency: cfg.ConsumerConcurrency,
 			RetryTiers:  retryTiers,
-		}).WithObserver(brokerObserver{logger: logger})
+		}).
+		WithObserver(brokerObserver{logger: logger}).
+		WithObserver(metrics.NewBrokerObserver(appMetrics, knownQueues))
+
+	backlogSampler := metrics.NewSampler(metrics.SamplerBacklog, appMetrics, logger,
+		metrics.NewBacklogCollector(outboxRepository, eventRepository),
+		metrics.SamplerConfig{Interval: cfg.MetricsSampleInterval, Timeout: cfg.MetricsSampleTimeout})
+	brokerSampler := metrics.NewSampler(metrics.SamplerBroker, appMetrics, logger,
+		metrics.NewQueueDepthCollector(func(ctx context.Context, queues []string) (map[string]int, error) {
+			return rabbitmq.QueueDepths(ctx, samplingBroker, queues)
+		}, knownQueues),
+		metrics.SamplerConfig{Interval: cfg.MetricsSampleInterval, Timeout: cfg.MetricsSampleTimeout})
 
 	healthService := health.New(cfg.ServiceName, buildinfo.Version, map[string]health.Checker{
 		"postgres": db.Ping,
@@ -259,6 +307,11 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 			consumerLogger.Error("consumer session ended", zap.Error(err))
 		})
 	})
+	// The samplers run beside the relay and the consumer, and their Run never
+	// returns an error: a backlog or depth that cannot be read must not take
+	// the worker down, because the work itself is unaffected.
+	group.Go(func() error { return backlogSampler.Run(groupCtx) })
+	group.Go(func() error { return brokerSampler.Run(groupCtx) })
 	group.Go(func() error { return server.Run(groupCtx) })
 	return group.Wait()
 }

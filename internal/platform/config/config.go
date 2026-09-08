@@ -94,6 +94,14 @@ type Config struct {
 	OTelExporterEndpoint string        `env:"OTEL_EXPORTER_OTLP_ENDPOINT" envDefault:"http://localhost:4318"`
 	OTelExportInterval   time.Duration `env:"OTEL_EXPORT_INTERVAL" envDefault:"10s"`
 
+	// Background metric sampling. The samplers read backlog from PostgreSQL
+	// and queue depth from the broker on their own goroutines, so the interval
+	// is a load decision rather than a latency one: the timeout bounds one
+	// round and must stay below the interval, or a stalled dependency would
+	// make rounds overlap.
+	MetricsSampleInterval time.Duration `env:"METRICS_SAMPLE_INTERVAL" envDefault:"15s"`
+	MetricsSampleTimeout  time.Duration `env:"METRICS_SAMPLE_TIMEOUT" envDefault:"5s"`
+
 	MigrationsDir string `env:"MIGRATIONS_DIR" envDefault:"db/migrations"`
 }
 
@@ -198,6 +206,15 @@ func Load(serviceName, defaultHTTPAddress string, requireRabbitMQ bool) (Config,
 		return Config{}, fmt.Errorf(
 			"DATABASE_MAX_OPEN_CONNECTIONS must be at least CONSUMER_CONCURRENCY plus %d for the relay and health checks (%d)",
 			relayAndHealthConnections, cfg.ConsumerConcurrency+relayAndHealthConnections)
+	}
+	if cfg.MetricsSampleInterval <= 0 || cfg.MetricsSampleTimeout <= 0 {
+		return Config{}, errors.New("metric sampling interval and timeout must be positive")
+	}
+	// A timeout at or above the interval lets one slow round still be running
+	// when the next fires, which turns a stalled dependency into unbounded
+	// concurrent sampling instead of a visible gap.
+	if cfg.MetricsSampleTimeout >= cfg.MetricsSampleInterval {
+		return Config{}, errors.New("METRICS_SAMPLE_TIMEOUT must be shorter than METRICS_SAMPLE_INTERVAL")
 	}
 	if cfg.OTelEnabled && cfg.OTelExporterEndpoint == "" {
 		return Config{}, errors.New("OTEL_EXPORTER_OTLP_ENDPOINT is required when telemetry is enabled")

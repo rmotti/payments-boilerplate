@@ -23,6 +23,9 @@ type stubWebhooks struct {
 func (s *stubWebhooks) Receive(_ context.Context, in webhookapp.ReceiveInput) (webhookapp.Outcome, error) {
 	s.callCount++
 	s.received = in
+	if in.ReadError != nil {
+		return "", in.ReadError
+	}
 	return s.outcome, s.err
 }
 
@@ -153,8 +156,14 @@ func TestWebhookOversizedBodyReturns500(t *testing.T) {
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 so a corrected limit can still receive it", response.Code)
 	}
-	if webhooks.callCount != 0 {
-		t.Fatal("an unreadable body must not reach the use case")
+	if webhooks.callCount != 1 {
+		t.Fatal("an unreadable body must reach the use case once for observability")
+	}
+	if !errors.Is(webhooks.received.ReadError, webhookapp.ErrPayloadTooLarge) {
+		t.Fatalf("ReadError = %v, want ErrPayloadTooLarge", webhooks.received.ReadError)
+	}
+	if webhooks.received.RawBody != nil {
+		t.Fatal("a partial oversized body must not cross the transport boundary")
 	}
 }
 

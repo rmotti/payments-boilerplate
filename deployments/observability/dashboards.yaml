@@ -1,0 +1,14 @@
+# Provisioning of the versioned dashboards for the local grafana/otel-lgtm
+# container. It is a development and testing aid, not a production
+# configuration: a real deployment points OTLP at its own backend and imports
+# payments-pipeline.json through whatever mechanism that backend uses.
+apiVersion: 1
+
+providers:
+  - name: "Payments Boilerplate"
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /otel-lgtm/grafana/conf/provisioning/dashboards/payments
+      foldersFromFilesStructure: false

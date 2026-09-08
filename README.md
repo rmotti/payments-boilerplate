@@ -161,10 +161,14 @@ registra a quantidade e o instante das solicitações de reprocessamento.
 Para incluir o ambiente de observabilidade:
 
 ```bash
-docker compose --profile observability up -d
+make observability-up
 ```
 
-O Grafana fica disponível em `http://localhost:3000`. Consulte a
+O Grafana fica disponível em `http://localhost:3000`, com o dashboard do
+pipeline de pagamentos já provisionado: HTTP, provedor, inbox, outbox, retry,
+DLQ e pool do PostgreSQL. Defina `OTEL_ENABLED=true` para que a aplicação
+exporte. Os instrumentos publicados e as referências operacionais estão em
+[métricas](docs/metrics.md). Consulte a
 [estrutura do projeto](docs/project-structure.md) para entender as fronteiras
 dos pacotes.
 
@@ -309,7 +313,7 @@ o Swagger UI representa no diagrama.
 - [Convenções do projeto](docs/conventions.md)
 - [Fluxo de encerramento de entregas](docs/delivery-workflow.md)
 - [Versionamento](docs/versioning.md)
-- [Métricas prioritárias](docs/metrics.md)
+- [Métricas](docs/metrics.md)
 - [Roadmap](docs/roadmap.md)
 - [Estrutura e responsabilidades dos diretórios](docs/project-structure.md)
 - [Deploy na Railway](docs/deployment/railway.md)
@@ -326,6 +330,8 @@ o Swagger UI representa no diagrama.
 - [Decisão arquitetural: recepção de webhooks e conteúdo da outbox](docs/decisions/0011-webhook-reception-and-outbox.md)
 - [Decisão arquitetural: relay do outbox e topologia](docs/decisions/0012-outbox-relay-and-topology.md)
 - [Decisão arquitetural: transação, transições e falha do consumer](docs/decisions/0013-consumer-transactions-transitions-and-retry.md)
+- [Decisão arquitetural: métricas da aplicação, cardinalidade e coleta de estado](docs/decisions/0015-application-metrics-and-cardinality.md)
+- [Decisão arquitetural: superfície HTTP, documentação e identidade do cliente](docs/decisions/0016-http-surface-and-client-identity.md)
 - [Decisão arquitetural: dados sensíveis, retenção e superfície de erro](docs/decisions/0017-sensitive-data-and-error-handling.md)
 - [Dados, retenção e modelo de ameaça](docs/security.md)
 - [Guia de contribuição](CONTRIBUTING.md)

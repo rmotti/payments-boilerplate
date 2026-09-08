@@ -191,3 +191,111 @@ func TestCreateCheckoutWrapsInvalidProviderSession(t *testing.T) {
 		t.Fatalf("SaveSession() called with invalid provider session: %#v", repo.saved)
 	}
 }
+
+// callRecorder is the surface the metrics observer sees: provider timing and
+// idempotency outcomes, with no identifier in either.
+type callRecorder struct {
+	calls     []ProviderCall
+	replays   int
+	conflicts int
+}
+
+func (r *callRecorder) ProviderCalled(call ProviderCall) { r.calls = append(r.calls, call) }
+func (r *callRecorder) Replayed()                        { r.replays++ }
+func (r *callRecorder) Conflicted()                      { r.conflicts++ }
+
+func newObservedService(
+	repo *repositoryStub, provider *providerStub, order orders.Order, observer Observer,
+) *Service {
+	fixed := time.Date(2026, 9, 6, 15, 0, 0, 0, time.UTC)
+	return NewService(orderReaderStub{order: order}, repo, provider,
+		WithClock(func() time.Time { return fixed }),
+		WithIDGenerators(
+			func() (string, error) { return "pay_fixed", nil },
+			func() (string, error) { return "pat_fixed", nil },
+		),
+		WithObserver(observer),
+	)
+}
+
+func TestProviderCallIsReportedOnSuccessAndOnFailure(t *testing.T) {
+	t.Parallel()
+
+	success := &callRecorder{}
+	provider := &providerStub{session: domain.Session{
+		ID: "cs_test_1", URL: "https://checkout.stripe.com/c/pay/test",
+		ExpiresAt: time.Date(2026, 9, 7, 15, 0, 0, 0, time.UTC),
+	}}
+	if _, err := newObservedService(&repositoryStub{}, provider, pendingOrder(), success).
+		CreateCheckout(context.Background(), CreateInput{
+			OrderID: pendingOrder().ID, IdempotencyKey: "checkout-key",
+		}); err != nil {
+		t.Fatalf("CreateCheckout() error = %v", err)
+	}
+	if len(success.calls) != 1 || success.calls[0].Err != nil {
+		t.Fatalf("successful calls = %#v, want one without error", success.calls)
+	}
+	if success.calls[0].Operation != ProviderOperationCreateCheckout {
+		t.Errorf("operation = %q, want create_checkout", success.calls[0].Operation)
+	}
+	if success.calls[0].Provider != domain.Stripe {
+		t.Errorf("provider = %q, want stripe", success.calls[0].Provider)
+	}
+	if success.calls[0].Duration <= 0 {
+		t.Error("provider call carries no duration")
+	}
+
+	failure := &callRecorder{}
+	if _, err := newObservedService(&repositoryStub{},
+		&providerStub{err: errors.New("provider unavailable")}, pendingOrder(), failure).
+		CreateCheckout(context.Background(), CreateInput{
+			OrderID: pendingOrder().ID, IdempotencyKey: "checkout-key",
+		}); err == nil {
+		t.Fatal("CreateCheckout() error = nil, want the provider failure")
+	}
+	if len(failure.calls) != 1 || failure.calls[0].Err == nil {
+		t.Fatalf("failed calls = %#v, want one carrying the error", failure.calls)
+	}
+}
+
+// A replay must be counted and must not reach the provider, which is the
+// whole point of the idempotency key.
+func TestIdempotentReplayIsReportedWithoutAProviderCall(t *testing.T) {
+	t.Parallel()
+
+	recorder := &callRecorder{}
+	repo := &repositoryStub{
+		payment: domain.Payment{ID: "pay_original"},
+		attempt: domain.Attempt{
+			ID: "pat_original", Status: domain.AttemptStatusPending,
+			ProviderSessionID: "cs_test_original", CheckoutURL: "https://checkout.stripe.com/original",
+			ExpiresAt: time.Date(2026, 9, 7, 15, 0, 0, 0, time.UTC),
+		},
+	}
+	provider := &providerStub{}
+	if _, err := newObservedService(repo, provider, pendingOrder(), recorder).
+		CreateCheckout(context.Background(), CreateInput{
+			OrderID: pendingOrder().ID, IdempotencyKey: "checkout-key",
+		}); err != nil {
+		t.Fatalf("CreateCheckout() replay error = %v", err)
+	}
+	if recorder.replays != 1 || len(recorder.calls) != 0 {
+		t.Fatalf("replays = %d with %d provider calls, want 1 and 0", recorder.replays, len(recorder.calls))
+	}
+}
+
+func TestIdempotencyConflictIsReported(t *testing.T) {
+	t.Parallel()
+
+	recorder := &callRecorder{}
+	if _, err := newObservedService(&repositoryStub{err: ErrIdempotencyKeyConflict},
+		&providerStub{}, pendingOrder(), recorder).
+		CreateCheckout(context.Background(), CreateInput{
+			OrderID: pendingOrder().ID, IdempotencyKey: "checkout-key",
+		}); err == nil {
+		t.Fatal("CreateCheckout() error = nil, want the conflict")
+	}
+	if recorder.conflicts != 1 {
+		t.Fatalf("conflicts = %d, want 1", recorder.conflicts)
+	}
+}

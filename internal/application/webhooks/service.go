@@ -74,17 +74,42 @@ const (
 	OutcomeIgnored Outcome = "ignored"
 )
 
-// ReceiveInput carries the untouched request bytes and its signature header.
+// ReceiveInput carries the untouched request bytes and signature header, or
+// the transport failure that prevented the complete body from being read.
 type ReceiveInput struct {
 	RawBody       []byte
 	Signature     string
 	CorrelationID string
+	// ReadError reports that the transport could not obtain the complete raw
+	// body. Receive still accepts the failed input so its observer accounts for
+	// the request, but verification and persistence are never attempted.
+	ReadError error
+}
+
+// Receipt reports one Receive call to an Observer. It carries no identifier
+// and no payload on purpose: everything in it is safe to aggregate.
+type Receipt struct {
+	Provider domain.Provider
+	// Kind is the provider-neutral meaning of the event, or KindUnknown when
+	// the application does not handle it or the request could not be verified.
+	Kind domain.Kind
+	// Outcome is what receiving produced. It is empty when Err is set.
+	Outcome  Outcome
+	Duration time.Duration
+	// Err is the failure that prevented the event from being stored.
+	Err error
+}
+
+// Observer receives one Receipt per Receive call.
+type Observer interface {
+	Received(receipt Receipt)
 }
 
 // Service accepts provider events durably.
 type Service struct {
 	verifier     Verifier
 	repository   Repository
+	observer     Observer
 	now          func() time.Time
 	newEventID   func() (string, error)
 	newMessageID func() (string, error)
@@ -106,6 +131,11 @@ func WithIDGenerators(eventID, messageID func() (string, error)) Option {
 	}
 }
 
+// WithObserver reports every receive outcome.
+func WithObserver(observer Observer) Option {
+	return func(s *Service) { s.observer = observer }
+}
+
 // NewService wires the receiving use case to its ports.
 func NewService(verifier Verifier, repository Repository, opts ...Option) *Service {
 	service := &Service{
@@ -120,14 +150,30 @@ func NewService(verifier Verifier, repository Repository, opts ...Option) *Servi
 
 // Receive verifies and durably stores one provider event.
 func (s *Service) Receive(ctx context.Context, input ReceiveInput) (Outcome, error) {
+	started := time.Now()
+	outcome, kind, err := s.receive(ctx, input)
+	if s.observer != nil {
+		s.observer.Received(Receipt{
+			Provider: s.verifier.Provider(), Kind: kind, Outcome: outcome,
+			Duration: time.Since(started), Err: err,
+		})
+	}
+	return outcome, err
+}
+
+func (s *Service) receive(ctx context.Context, input ReceiveInput) (Outcome, domain.Kind, error) {
+	if input.ReadError != nil {
+		return "", domain.KindUnknown, input.ReadError
+	}
 	providerEvent, err := s.verifier.Verify(input.RawBody, input.Signature)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrInvalidSignature, err)
+		return "", domain.KindUnknown, fmt.Errorf("%w: %w", ErrInvalidSignature, err)
 	}
+	kind := providerEvent.Kind
 
 	eventID, err := s.newEventID()
 	if err != nil {
-		return "", err
+		return "", kind, err
 	}
 	now := s.now()
 	event, err := domain.NewEvent(
@@ -137,7 +183,7 @@ func (s *Service) Receive(ctx context.Context, input ReceiveInput) (Outcome, err
 	if err != nil {
 		// The signature already proved the bytes came from the provider, so a
 		// malformed event here is not a client error.
-		return "", fmt.Errorf("build webhook event: %w", err)
+		return "", kind, fmt.Errorf("build webhook event: %w", err)
 	}
 
 	storeCtx, cancel := context.WithTimeout(ctx, storeTimeout)
@@ -146,29 +192,29 @@ func (s *Service) Receive(ctx context.Context, input ReceiveInput) (Outcome, err
 	if !event.Handled() {
 		stored, err := s.repository.StoreIgnored(storeCtx, event)
 		if err != nil {
-			return "", fmt.Errorf("store ignored webhook event: %w", err)
+			return "", kind, fmt.Errorf("store ignored webhook event: %w", err)
 		}
 		if !stored {
-			return OutcomeDuplicate, nil
+			return OutcomeDuplicate, kind, nil
 		}
-		return OutcomeIgnored, nil
+		return OutcomeIgnored, kind, nil
 	}
 
 	messageID, err := s.newMessageID()
 	if err != nil {
-		return "", err
+		return "", kind, err
 	}
 	message, err := domain.NewMessage(messageID, event, input.CorrelationID, providerEvent.OccurredAt, now)
 	if err != nil {
-		return "", fmt.Errorf("build outbox message: %w", err)
+		return "", kind, fmt.Errorf("build outbox message: %w", err)
 	}
 
 	stored, err := s.repository.StorePending(storeCtx, event, message)
 	if err != nil {
-		return "", fmt.Errorf("store webhook event: %w", err)
+		return "", kind, fmt.Errorf("store webhook event: %w", err)
 	}
 	if !stored {
-		return OutcomeDuplicate, nil
+		return OutcomeDuplicate, kind, nil
 	}
-	return OutcomeAccepted, nil
+	return OutcomeAccepted, kind, nil
 }

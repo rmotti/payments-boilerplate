@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -14,12 +15,14 @@ import (
 type stubVerifier struct {
 	event ProviderEvent
 	err   error
+	calls int
 	// body records the bytes handed to verification, so a test can prove the
 	// use case forwards them untouched.
 	body []byte
 }
 
 func (s *stubVerifier) Verify(rawBody []byte, _ string) (ProviderEvent, error) {
+	s.calls++
 	s.body = rawBody
 	if s.err != nil {
 		return ProviderEvent{}, s.err
@@ -217,5 +220,143 @@ func TestReceiveSurfacesStorageFailure(t *testing.T) {
 	}
 	if errors.Is(err, ErrInvalidSignature) {
 		t.Fatal("a storage failure must not be reported as a signature problem")
+	}
+}
+
+// receiptRecorder is what the metrics observer does: it takes one Receipt per
+// call and nothing else.
+type receiptRecorder struct{ receipts []Receipt }
+
+func (r *receiptRecorder) Received(receipt Receipt) { r.receipts = append(r.receipts, receipt) }
+
+func TestReceiveReportsEveryOutcomeToTheObserver(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		verifier    *stubVerifier
+		repository  *stubRepository
+		wantOutcome Outcome
+		wantKind    domain.Kind
+		wantErr     error
+	}{
+		{
+			name: "accepted", verifier: &stubVerifier{event: handledEvent()},
+			repository:  &stubRepository{stored: true},
+			wantOutcome: OutcomeAccepted, wantKind: domain.KindCheckoutCompleted,
+		},
+		{
+			name: "duplicate", verifier: &stubVerifier{event: handledEvent()},
+			repository:  &stubRepository{stored: false},
+			wantOutcome: OutcomeDuplicate, wantKind: domain.KindCheckoutCompleted,
+		},
+		{
+			name:     "invalid signature",
+			verifier: &stubVerifier{err: errors.New("signature mismatch")},
+			// The signature failed, so nothing about the event is known,
+			// including its kind.
+			repository: &stubRepository{}, wantKind: domain.KindUnknown,
+			wantErr: ErrInvalidSignature,
+		},
+		{
+			name: "storage failure", verifier: &stubVerifier{event: handledEvent()},
+			repository: &stubRepository{err: errors.New("postgres down")},
+			wantKind:   domain.KindCheckoutCompleted, wantErr: errors.New("store"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			recorder := &receiptRecorder{}
+			service := NewService(test.verifier, test.repository,
+				WithClock(func() time.Time { return time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC) }),
+				WithIDGenerators(
+					func() (string, error) { return "evt_local", nil },
+					func() (string, error) { return "msg_local", nil },
+				),
+				WithObserver(recorder))
+
+			_, err := service.Receive(context.Background(), ReceiveInput{RawBody: []byte(`{}`)})
+			if (err != nil) != (test.wantErr != nil) {
+				t.Fatalf("Receive() error = %v, want error presence %v", err, test.wantErr != nil)
+			}
+			if len(recorder.receipts) != 1 {
+				t.Fatalf("receipts = %d, want 1", len(recorder.receipts))
+			}
+			receipt := recorder.receipts[0]
+			if receipt.Provider != domain.Stripe {
+				t.Errorf("provider = %q, want stripe", receipt.Provider)
+			}
+			if receipt.Kind != test.wantKind {
+				t.Errorf("kind = %q, want %q", receipt.Kind, test.wantKind)
+			}
+			if receipt.Outcome != test.wantOutcome {
+				t.Errorf("outcome = %q, want %q", receipt.Outcome, test.wantOutcome)
+			}
+			if (receipt.Err != nil) != (test.wantErr != nil) {
+				t.Errorf("receipt error = %v, want error presence %v", receipt.Err, test.wantErr != nil)
+			}
+			if receipt.Duration <= 0 {
+				t.Error("receipt carries no duration")
+			}
+		})
+	}
+}
+
+func TestReceiveReportsBodyReadFailureWithoutVerifyingOrPersisting(t *testing.T) {
+	t.Parallel()
+
+	verifier := &stubVerifier{event: handledEvent()}
+	repository := &stubRepository{stored: true}
+	recorder := &receiptRecorder{}
+	service := NewService(verifier, repository, WithObserver(recorder))
+	readErr := fmt.Errorf("%w: request body too large", ErrPayloadTooLarge)
+
+	_, err := service.Receive(context.Background(), ReceiveInput{ReadError: readErr})
+	if !errors.Is(err, ErrPayloadTooLarge) {
+		t.Fatalf("Receive() error = %v, want ErrPayloadTooLarge", err)
+	}
+	if verifier.calls != 0 {
+		t.Fatalf("verification calls = %d, want 0", verifier.calls)
+	}
+	if repository.callCount != 0 {
+		t.Fatalf("repository calls = %d, want 0", repository.callCount)
+	}
+	if len(recorder.receipts) != 1 {
+		t.Fatalf("receipts = %d, want 1", len(recorder.receipts))
+	}
+	receipt := recorder.receipts[0]
+	if receipt.Provider != domain.Stripe || receipt.Kind != domain.KindUnknown ||
+		receipt.Outcome != "" || !errors.Is(receipt.Err, ErrPayloadTooLarge) {
+		t.Fatalf("receipt = %+v, want a classified body read failure", receipt)
+	}
+}
+
+// The receipt is the whole surface a metrics observer sees, so it must not
+// carry the identifiers or the bytes of the event.
+func TestReceiptCarriesNoIdentifierOrPayload(t *testing.T) {
+	t.Parallel()
+
+	recorder := &receiptRecorder{}
+	service := NewService(&stubVerifier{event: handledEvent()}, &stubRepository{stored: true},
+		WithObserver(recorder))
+	if _, err := service.Receive(context.Background(), ReceiveInput{
+		RawBody:   []byte(`{"id":"evt_secret","customer_email":"person@example.test"}`),
+		Signature: "t=1,v1=deadbeef", CorrelationID: "corr-8b21",
+	}); err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	if len(recorder.receipts) != 1 {
+		t.Fatalf("receipts = %d, want 1", len(recorder.receipts))
+	}
+	rendered := strings.Join([]string{
+		string(recorder.receipts[0].Provider), string(recorder.receipts[0].Kind),
+		string(recorder.receipts[0].Outcome),
+	}, " ")
+	for _, forbidden := range []string{"evt_", "corr-", "example.test", "deadbeef"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Errorf("receipt %q carries %q", rendered, forbidden)
+		}
 	}
 }

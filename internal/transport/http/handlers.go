@@ -354,24 +354,24 @@ func (h *APIHandler) ReceiveStripeWebhook(
 		return nil, ErrNotServed
 	}
 
-	rawBody, err := readWebhookBody(request.Body)
-	if err != nil {
+	rawBody, readErr := readWebhookBody(request.Body)
+	input := webhookapp.ReceiveInput{
+		RawBody: rawBody, CorrelationID: correlationIDFromContext(ctx),
+	}
+	if request.Params.StripeSignature != nil {
+		input.Signature = *request.Params.StripeSignature
+	}
+	if readErr != nil {
 		// The body could not be read whole, so the signature could never be
 		// checked. Unlike a forged signature this is our own limit, and a
-		// redelivery works once it is raised, so the provider must retry.
-		return nil, fmt.Errorf("%w: %w", webhookapp.ErrPayloadTooLarge, err)
+		// redelivery works once it is raised, so the provider must retry. It is
+		// still sent through the use case so the receive observer records the
+		// failed request without attempting verification or persistence.
+		input.RawBody = nil
+		input.ReadError = fmt.Errorf("%w: %w", webhookapp.ErrPayloadTooLarge, readErr)
 	}
 
-	var signature string
-	if request.Params.StripeSignature != nil {
-		signature = *request.Params.StripeSignature
-	}
-
-	outcome, err := h.webhooks.Receive(ctx, webhookapp.ReceiveInput{
-		RawBody:       rawBody,
-		Signature:     signature,
-		CorrelationID: correlationIDFromContext(ctx),
-	})
+	outcome, err := h.webhooks.Receive(ctx, input)
 	if err != nil {
 		if errors.Is(err, webhookapp.ErrInvalidSignature) {
 			// Absent, forged and expired signatures answer the same way, so

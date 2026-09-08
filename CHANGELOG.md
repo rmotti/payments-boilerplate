@@ -155,6 +155,48 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   com parsing e validação no startup, e a resolução do endereço do cliente
   ficou centralizada para que o rate limiting a reutilize. Registrado no
   [ADR 0016](docs/decisions/0016-http-surface-and-client-identity.md).
+- Métricas da aplicação para outbox, filas, retries e DLQ, concentradas em
+  `internal/platform/metrics`. O pacote implementa as interfaces de observer que
+  as camadas já declaravam, então domínio e casos de uso continuam sem importar
+  OpenTelemetry; onde faltava informação para uma métrica honesta, a interface
+  original foi estendida por uma segunda interface opcional que só o observer de
+  métricas implementa, e `WithObserver` passou a aceitar logging e métricas lado
+  a lado. Contadores e histogramas cobrem recepção de webhook, assinatura
+  inválida, duplicação, chamadas ao provedor por operação e desfecho, replay e
+  conflito de idempotência, transições de estado, e o ciclo completo de relay e
+  consumer, incluindo mensagem presa, falha permanente, lease perdido,
+  redelivery, retry, no-op e DLQ.
+- Gauges de estado alimentados por samplers em background, com timeout por
+  rodada e publicação do último valor conhecido: outbox pendente e idade do mais
+  antigo, inbox pendente, com falha e idade do mais antigo, profundidade de cada
+  fila declarada e uso do pool PostgreSQL por estado. O sampler de fila usa
+  conexão e canal próprios, porque uma declaração passiva de fila inexistente
+  fecha o canal em que roda e o timeout instalaria um prazo no socket do
+  consumo. Uma coleta que falha não zera nem apaga série: os gauges seguram o
+  último valor, `metrics.sampler.failures` incrementa e `metrics.sampler.age`
+  cresce, de modo que banco ou broker indisponível vira sinal visível em vez de
+  coleta bloqueada ou processo derrubado.
+- Allowlist explícita de labels, com normalização para `other`. Identificador,
+  chave de idempotência, `correlation_id`, segredo, texto de mensagem de erro,
+  caminho HTTP livre e tipo de evento não normalizado não podem virar label, e
+  testes falham quando uma instrumentação tenta. Nomes de fila são limitados à
+  topologia que o próprio processo declarou. A lista não é derivada dos enums do
+  domínio: um provedor ou estado novo é decisão registrada, não série que
+  aparece sozinha.
+- Dashboard Grafana versionado em `deployments/observability`, cobrindo HTTP,
+  provedor, inbox, outbox, retry, DLQ e pool do PostgreSQL, provisionado somente
+  leitura pelo profile `observability` do Compose. Um teste verifica que toda
+  consulta nomeia instrumento publicado e apenas labels permitidas.
+- `METRICS_SAMPLE_INTERVAL` e `METRICS_SAMPLE_TIMEOUT` configuram a amostragem.
+  A configuração recusa timeout maior ou igual ao intervalo, que transformaria
+  uma dependência travada em amostragem concorrente ilimitada em vez de uma
+  lacuna visível. Desabilitar OTLP não muda comportamento funcional: os
+  instrumentos são criados contra o provider no-op e nada é registrado.
+- `docs/metrics.md` reescrito para separar o que a aplicação publica hoje das
+  referências operacionais e metas de produto, que a lista anterior de vinte e
+  um nomes misturava. Decisão registrada no
+  [ADR 0015](docs/decisions/0015-application-metrics-and-cardinality.md).
+
 - `X-Correlation-ID` passa a fazer parte obrigatória das 33 respostas do
   OpenAPI, com código gerado e handlers alinhados ao contrato.
 - Canal privado de relato de vulnerabilidades habilitado no repositório. O
