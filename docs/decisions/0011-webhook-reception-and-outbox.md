@@ -112,9 +112,10 @@ eventos e permite reenviar entregas.
 A mensagem completa acoplaria ainda o contrato de mensageria ao formato de
 evento da Stripe, o que encareceria a adoção de um segundo provedor.
 
-Como efeito secundário, o broker deixa de armazenar dados pessoais. A instalação
-passa a ter um único sistema sujeito a retenção, purga e controle de acesso
-sobre esses dados, em vez de dois com posturas de exposição diferentes.
+Como efeito secundário, o broker deixa de armazenar o payload e os dados diretos
+do cliente. As referências da mensagem ainda podem ser relacionadas à inbox e
+continuam protegidas como dados operacionais; o PostgreSQL passa a ser o único
+sistema que mantém o evento completo.
 
 ### Descartar eventos de tipo não tratado sem gravá-los
 

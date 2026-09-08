@@ -165,6 +165,25 @@ func (c *Connection) Channel(ctx context.Context) (*amqp.Channel, error) {
 	return channel, err
 }
 
+// withChannel keeps the caller's deadline installed for the complete lifetime
+// of a short-lived channel operation. Channel alone can only bound opening the
+// channel: synchronous RPCs performed after it returns would otherwise run
+// after withDeadline had cleared the socket deadline.
+//
+// It is intentionally unexported. Long-lived publishers and consumers manage
+// their channels separately; this helper is for bounded inspections such as
+// passive queue declarations.
+func (c *Connection) withChannel(ctx context.Context, use func(*amqp.Channel) error) error {
+	return c.withDeadline(ctx, func() error {
+		channel, err := c.channel(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = channel.Close() }()
+		return use(channel)
+	})
+}
+
 // channel opens a channel while the caller already owns operationMu and has a
 // deadline installed on the transport.
 func (c *Connection) channel(ctx context.Context) (*amqp.Channel, error) {

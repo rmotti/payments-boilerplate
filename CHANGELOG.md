@@ -114,9 +114,109 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Decisão de recepção de webhooks da Fase 3: contrato de resposta por
   situação, que define quando o provedor deve reentregar, e mensagem de
   outbox por referência ao evento, sem copiar o payload do provedor.
+- Classificação dos dados persistidos, política de retenção e modelo de ameaça,
+  registrados no ADR 0017 e em `docs/security.md`. As duas cópias do payload da
+  Stripe em `webhook_events` são declaradas como dados pessoais, cada uma com
+  finalidade, acesso e prazo de retenção escritos, e `last_error` passa a ser
+  tratado como superfície pública por ser devolvido pela API operacional.
+- Procedimento operacional de expurgo com o SQL correspondente. A `0.1.0` não
+  terá expurgo automatizado, e a ausência de automação passa a ser decisão
+  registrada em vez de retenção indefinida silenciosa.
+- Verificação executável do contrato OpenAPI contra exchanges HTTP reais, com
+  validação de request, status, headers, media type, corpo, exemplos e um
+  manifesto exato para todos os pares operação/status documentados.
+- Harness E2E serial e isolado cobrindo autenticação, preço confiável,
+  idempotência, checkout, recepção atômica e deduplicada de webhooks, cartão,
+  Pix, eventos fora de ordem, DLQ, redelivery, concorrência e reprocessamento.
+- Hooks de teste para as janelas entre publish/confirm/settlement/commit/ack e
+  proxy TCP para indisponibilidade, blackhole e recuperação de PostgreSQL e
+  RabbitMQ, com matriz prolongada de backlog e percentis de drenagem.
+- Jobs dedicados para contrato, E2E e chaos determinístico; chaos prolongado
+  roda por agendamento ou manualmente e bloqueia releases no mesmo SHA da tag.
 
 ### Changed
 
+- Superfície HTTP fechada. A documentação passa a ser opt-in por `DOCS_ENABLED`,
+  com default `false` em todos os ambientes: sem o opt-in, `/docs`, `/docs/` e
+  `/openapi.yaml` respondem `404` como qualquer caminho inexistente. Em
+  `APP_ENV=development` o opt-in serve a documentação sem credencial; em
+  qualquer outro ambiente ele exige `X-API-Key` válida nas três rotas, decidida
+  antes do redirect e da verificação de método, e o startup registra um warning
+  que nomeia o ambiente e nunca a chave. `.env.example` e o Compose de
+  desenvolvimento ligam a documentação explicitamente. Toda resposta, incluindo
+  `404` e as do recovery, passa a carregar `X-Content-Type-Options`,
+  `Referrer-Policy`, `Cache-Control: no-store`, `X-Frame-Options` e
+  `Content-Security-Policy`; a página do Swagger recebe uma política própria com
+  os scripts inline liberados por hash, validada contra os recursos que o
+  `swgui` realmente serve. CORS permanece desligado. O worker deixa de registrar
+  o strict server completo e publica somente `GET /health`; as demais operações
+  do contrato respondem `404` naquele processo, em vez de `401` ou `501`.
+  `TRUSTED_PROXY_CIDRS` define de quais peers `X-Forwarded-For` é acreditado,
+  com parsing e validação no startup, e a resolução do endereço do cliente
+  ficou centralizada para que o rate limiting a reutilize. Registrado no
+  [ADR 0016](docs/decisions/0016-http-surface-and-client-identity.md).
+- Métricas da aplicação para outbox, filas, retries e DLQ, concentradas em
+  `internal/platform/metrics`. O pacote implementa as interfaces de observer que
+  as camadas já declaravam, então domínio e casos de uso continuam sem importar
+  OpenTelemetry; onde faltava informação para uma métrica honesta, a interface
+  original foi estendida por uma segunda interface opcional que só o observer de
+  métricas implementa, e `WithObserver` passou a aceitar logging e métricas lado
+  a lado. Contadores e histogramas cobrem recepção de webhook, assinatura
+  inválida, duplicação, chamadas ao provedor por operação e desfecho, replay e
+  conflito de idempotência, transições de estado, e o ciclo completo de relay e
+  consumer, incluindo mensagem presa, falha permanente, lease perdido,
+  redelivery, retry, no-op e DLQ.
+- Gauges de estado alimentados por samplers em background, com timeout por
+  rodada e publicação do último valor conhecido: outbox pendente e idade do mais
+  antigo, inbox pendente, com falha e idade do mais antigo, profundidade de cada
+  fila declarada e uso do pool PostgreSQL por estado. O sampler de fila usa
+  conexão e canal próprios, porque uma declaração passiva de fila inexistente
+  fecha o canal em que roda e o timeout instalaria um prazo no socket do
+  consumo. Uma coleta que falha não zera nem apaga série: os gauges seguram o
+  último valor, `metrics.sampler.failures` incrementa e `metrics.sampler.age`
+  cresce, de modo que banco ou broker indisponível vira sinal visível em vez de
+  coleta bloqueada ou processo derrubado.
+- Allowlist explícita de labels, com normalização para `other`. Identificador,
+  chave de idempotência, `correlation_id`, segredo, texto de mensagem de erro,
+  caminho HTTP livre e tipo de evento não normalizado não podem virar label, e
+  testes falham quando uma instrumentação tenta. Nomes de fila são limitados à
+  topologia que o próprio processo declarou. A lista não é derivada dos enums do
+  domínio: um provedor ou estado novo é decisão registrada, não série que
+  aparece sozinha.
+- Dashboard Grafana versionado em `deployments/observability`, cobrindo HTTP,
+  provedor, inbox, outbox, retry, DLQ e pool do PostgreSQL, provisionado somente
+  leitura pelo profile `observability` do Compose. Um teste verifica que toda
+  consulta nomeia instrumento publicado e apenas labels permitidas.
+- `METRICS_SAMPLE_INTERVAL` e `METRICS_SAMPLE_TIMEOUT` configuram a amostragem.
+  A configuração recusa timeout maior ou igual ao intervalo, que transformaria
+  uma dependência travada em amostragem concorrente ilimitada em vez de uma
+  lacuna visível. Desabilitar OTLP não muda comportamento funcional: os
+  instrumentos são criados contra o provider no-op e nada é registrado.
+- `docs/metrics.md` reescrito para separar o que a aplicação publica hoje das
+  referências operacionais e metas de produto, que a lista anterior de vinte e
+  um nomes misturava. Decisão registrada no
+  [ADR 0015](docs/decisions/0015-application-metrics-and-cardinality.md).
+
+- `X-Correlation-ID` passa a fazer parte obrigatória das 33 respostas do
+  OpenAPI, com código gerado e handlers alinhados ao contrato.
+- Canal privado de relato de vulnerabilidades habilitado no repositório. O
+  `SECURITY.md` deixa de instruir a abertura de issue pública provisória e
+  aponta para o formulário privado do GitHub.
+- README e `SECURITY.md` deixam de sugerir ausência de dados pessoais. A
+  ausência de dado completo de cartão continua verdadeira e passa a ser
+  apresentada apenas como o que é: consequência do Checkout hospedado.
+
+- Composição executável da API e do worker extraída para `internal/runtime/api`
+  e `internal/runtime/worker`, pacotes importáveis que recebem `context.Context`,
+  `config.Config` e dependências opcionais tipadas pelas portas da aplicação.
+  `cmd/api` e `cmd/worker` passam a responder apenas por configuração, sinais e
+  código de saída, e binários e testes passam a usar a mesma composição. O
+  servidor HTTP aceita um listener já aberto, o que elimina a corrida de escolher
+  uma porta livre e depois tentar abri-la de novo. A substituição de uma porta
+  Stripe dispensa somente a configuração daquele adapter, preservando a
+  validação do checkout ou webhook real que continuar ativo. O shutdown aguarda
+  a goroutine do servidor e força o fechamento depois do timeout. Registrado no
+  [ADR 0014](docs/decisions/0014-testable-composition-and-e2e-boundaries.md).
 - Documentação sincronizada com o fim da Fase 2, distinguindo o checkout já
   executável do pipeline assíncrono planejado para a Fase 3 e resumindo o estado
   do roadmap no README.

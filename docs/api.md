@@ -3,6 +3,11 @@
 Este documento delimita a superfície HTTP do MVP. A especificação OpenAPI é a
 fonte executável do contrato e gera o strict server usado pela aplicação.
 
+Somente blocos JSON com o marcador `contract` são exemplos contratuais. Cada
+marcador informa `operation`, `direction` e `status`, e a suíte valida o bloco
+contra esse ponto exato de `api/openapi.yaml`. Blocos sem o marcador são apenas
+ilustrativos e não são interpretados pelo verificador.
+
 ## Convenções
 
 - Prefixo de versão: `/v1`.
@@ -14,7 +19,7 @@ fonte executável do contrato e gera o strict server usado pela aplicação.
 - Erros: estrutura consistente com código, mensagem e identificador de
   correlação.
 
-```json
+```json contract operation=createOrder direction=response status=400 name=common-error
 {
   "code": "invalid_request",
   "message": "quantity must be between 1 and 1000",
@@ -46,7 +51,7 @@ está registrada no [ADR 0010](decisions/0010-route-access-model.md):
 | `POST /v1/webhook-events/{webhookEventId}/reprocess` | Header `X-API-Key` obrigatório |
 | `POST /v1/webhooks/stripe` | Sem API key; assinatura Stripe obrigatória |
 | `GET /health` | Público, com resposta mínima |
-| `GET /docs` e `GET /openapi.yaml` | Públicos enquanto a documentação estiver habilitada; o comando `api` atual os habilita em todos os ambientes |
+| `GET /docs`, `GET /docs/` e `GET /openapi.yaml` | Ausentes sem `DOCS_ENABLED`; públicos em `APP_ENV=development` com o opt-in; `X-API-Key` obrigatória com o opt-in em qualquer outro ambiente |
 
 O runtime aplica a política por `operationId`, negando por padrão operações que
 não aparecem na lista pública. Quando a requisição alcança o middleware de
@@ -54,9 +59,12 @@ autenticação, chave ausente ou inválida recebe a mesma resposta `401`, com
 código `unauthorized`, sem revelar detalhes sobre as credenciais ativas. O
 binding OpenAPI pode rejeitar antes, com `400`, headers obrigatórios ausentes ou
 um corpo malformado; em nenhum desses casos o caso de uso é executado. As rotas
-da documentação ficam fora do strict server e não exigem API key.
-Desabilitá-las ou protegê-las fora do ambiente de desenvolvimento permanece
-como atividade da Fase 4.
+da documentação ficam fora do strict server e seguem a política do
+[ADR 0016](decisions/0016-http-surface-and-client-identity.md), descrita
+adiante.
+
+Autenticação não é limite de uso: toda operação, autenticada ou não, também
+passa pelo controle de taxa descrito em [Limite de requisições](#limite-de-requisições).
 
 Uma chave válida dará acesso aos pedidos da própria instalação. Multi-tenancy,
 login de consumidores e autorização entre organizações permanecem fora do
@@ -80,7 +88,7 @@ Headers:
 
 Requisição:
 
-```json
+```json contract operation=createOrder direction=request status=- name=create-order-request
 {
   "productId": "product_demo",
   "quantity": 1
@@ -92,7 +100,7 @@ deve estar entre 1 e 1000.
 
 Resposta `201 Created`:
 
-```json
+```json contract operation=createOrder direction=response status=201 name=create-order-response
 {
   "id": "ord_3f2504e04f8911d39a0c0305e82c3301",
   "status": "pending",
@@ -138,7 +146,7 @@ depois que o ID da sessão, a URL e sua expiração estão ligados ao
 
 Resposta `201 Created`:
 
-```json
+```json contract operation=createCheckout direction=response status=201 name=create-checkout-response
 {
   "checkoutUrl": "https://checkout.stripe.com/c/pay/...",
   "expiresAt": "2026-09-05T18:00:00Z"
@@ -159,7 +167,7 @@ Requer `X-API-Key` e devolve `404 order_not_found` quando o identificador é
 malformado ou não corresponde a um pedido desta instalação. A resposta não
 distingue esses casos.
 
-```json
+```json contract operation=getOrder direction=response status=200 name=get-order-response
 {
   "id": "ord_0123456789abcdef0123456789abcdef",
   "status": "pending",
@@ -241,12 +249,84 @@ Indica se o processo e suas dependências obrigatórias estão disponíveis. Na 
 o resultado inclui PostgreSQL; no worker, inclui PostgreSQL e RabbitMQ. Retorna
 `200` quando todos os checks estão `up` e `503` quando algum está `down`.
 
-### `GET /docs`
+### `GET /docs`, `GET /docs/` e `GET /openapi.yaml`
 
-Expõe publicamente o Swagger UI gerado a partir do contrato OpenAPI versionado
-quando `DocsEnabled` está ativo. O comando `api` atual mantém essa opção
-habilitada independentemente de `APP_ENV`; a restrição em produção será tratada
-na Fase 4.
+Servem o Swagger UI e o contrato OpenAPI versionado. As três rotas seguem uma
+política única, decidida por `DOCS_ENABLED` e `APP_ENV`:
+
+| `APP_ENV` | `DOCS_ENABLED` | Resposta |
+| --- | --- | --- |
+| qualquer um | `false` (default) | `404`, indistinguível de rota inexistente |
+| `development` | `true` | documentação servida sem credencial |
+| qualquer outro | `true` | `X-API-Key` válida obrigatória; sem ela, `401` |
+
+A autenticação é decidida antes do redirect de `/docs` para `/docs/` e antes da
+verificação de método, de modo que nenhuma resposta revela que as rotas existem.
+Habilitar a documentação fora de `development` registra um warning no startup,
+que nomeia o ambiente e nunca a chave.
+
+## Limite de requisições
+
+Toda operação é limitada por taxa. A política completa, com o algoritmo e suas
+limitações, está no [ADR 0018](decisions/0018-rate-limiting.md); o que segue é
+o que um integrador precisa saber para consumir a API.
+
+Cada limite é um **burst**, quantas requisições passam em sequência, e o
+**intervalo** em que esse burst se recompõe por inteiro. A taxa sustentada é
+burst por intervalo, e o crédito volta continuamente, um token de cada vez, e
+não de uma só vez no fim da janela.
+
+| Limite | Contado por | Default | Aplica-se a |
+| --- | --- | --- | --- |
+| Grosseiro | Endereço do cliente | 1 200 / min | Negócio, operações, documentação e caminhos desconhecidos, antes de parsing e autenticação |
+| Por credencial | Credencial válida | 600 / min | Rotas de negócio e operacionais |
+| Webhook | Balde global único | 600 / min | `POST /v1/webhooks/stripe`, antes da leitura do corpo |
+| Health | Endereço do cliente | 120 / min | `GET /health`, em balde separado |
+
+As rotas de negócio pagam o limite grosseiro e o por credencial. O primeiro é
+mais largo por padrão, para limitar a origem sem esconder a quota efetiva da
+credencial. Webhook e health não pagam o grosseiro: usam seus baldes dedicados
+na mesma posição externa da cadeia. Assim, o endereço da Stripe nunca decide se
+uma entrega é aceita, e tráfego comum não derruba a probe.
+
+Uma requisição recusada recebe `429` com o envelope de erro comum e o código
+estável `rate_limited`, mais o header `Retry-After` em segundos inteiros:
+
+```json contract operation=createOrder direction=response status=429 name=rate-limited
+{
+  "code": "rate_limited",
+  "message": "too many requests",
+  "correlationId": "6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e"
+}
+```
+
+A resposta não informa qual dos limites foi atingido: dizê-lo confirmaria, a
+quem tentou adivinhar uma chave, que ela é válida. Uma requisição recusada não
+consome crédito, então repetir em laço não afasta o próximo horário permitido —
+mas também não o antecipa. Respeite o `Retry-After`.
+
+Uma credencial inválida nunca cria um balde próprio: essas requisições contam
+apenas no limite grosseiro e continuam recebendo `401`.
+
+Os valores são configuráveis por ambiente (`RATE_LIMIT_*`, documentadas no
+README e em `.env.example`) e podem ser desligados por completo com
+`RATE_LIMIT_ENABLED=false`, para quem já limita na borda. Os limites são **por
+processo**: uma implantação com várias réplicas admite até N vezes os valores
+configurados.
+
+### Headers de resposta
+
+Toda resposta, inclusive `404`, `429` e as geradas pelo recovery, carrega
+`X-Correlation-ID`, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer`, `Cache-Control: no-store`,
+`X-Frame-Options: DENY` e uma `Content-Security-Policy`. Respostas JSON e o
+documento OpenAPI usam `default-src 'none'; frame-ancestors 'none'`; a página
+do Swagger recebe uma política própria, com os scripts inline liberados por
+hash. Uma resposta `429` acrescenta `Retry-After`. A API não emite headers de
+CORS.
+
+O worker publica somente `GET /health`. As demais operações do contrato não são
+registradas naquele processo e respondem `404`.
 
 ## Fora do contrato da versão 0.1
 

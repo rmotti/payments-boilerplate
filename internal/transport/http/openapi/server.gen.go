@@ -244,6 +244,9 @@ type OrderId = string
 // WebhookEventId defines model for WebhookEventId.
 type WebhookEventId = string
 
+// TooManyRequests defines model for TooManyRequests.
+type TooManyRequests = Error
+
 // CreateOrderParams defines parameters for CreateOrder.
 type CreateOrderParams struct {
 	// IdempotencyKey Chave opaca escolhida pelo cliente que identifica esta operacao. Deve
@@ -694,6 +697,16 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	return m
 }
 
+type TooManyRequestsResponseHeaders struct {
+	RetryAfter     int
+	XCorrelationID string
+}
+type TooManyRequestsJSONResponse struct {
+	Body Error
+
+	Headers TooManyRequestsResponseHeaders
+}
+
 type GetHealthRequestObject struct {
 }
 
@@ -701,29 +714,61 @@ type GetHealthResponseObject interface {
 	VisitGetHealthResponse(w http.ResponseWriter) error
 }
 
-type GetHealth200JSONResponse HealthResponse
+type GetHealth200ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type GetHealth200JSONResponse struct {
+	Body    HealthResponse
+	Headers GetHealth200ResponseHeaders
+}
 
 func (response GetHealth200JSONResponse) VisitGetHealthResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type GetHealth503JSONResponse HealthResponse
+type GetHealth429JSONResponse struct{ TooManyRequestsJSONResponse }
+
+func (response GetHealth429JSONResponse) VisitGetHealthResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetHealth503ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type GetHealth503JSONResponse struct {
+	Body    HealthResponse
+	Headers GetHealth503ResponseHeaders
+}
 
 func (response GetHealth503JSONResponse) VisitGetHealthResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(503)
 	_, err := buf.WriteTo(w)
 	return err
@@ -738,99 +783,171 @@ type CreateOrderResponseObject interface {
 	VisitCreateOrderResponse(w http.ResponseWriter) error
 }
 
-type CreateOrder201JSONResponse Order
+type CreateOrder201ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateOrder201JSONResponse struct {
+	Body    Order
+	Headers CreateOrder201ResponseHeaders
+}
 
 func (response CreateOrder201JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(201)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateOrder400JSONResponse Error
+type CreateOrder400ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateOrder400JSONResponse struct {
+	Body    Error
+	Headers CreateOrder400ResponseHeaders
+}
 
 func (response CreateOrder400JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(400)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateOrder401JSONResponse Error
+type CreateOrder401ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateOrder401JSONResponse struct {
+	Body    Error
+	Headers CreateOrder401ResponseHeaders
+}
 
 func (response CreateOrder401JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(401)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateOrder404JSONResponse Error
+type CreateOrder404ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateOrder404JSONResponse struct {
+	Body    Error
+	Headers CreateOrder404ResponseHeaders
+}
 
 func (response CreateOrder404JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateOrder409JSONResponse Error
+type CreateOrder409ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateOrder409JSONResponse struct {
+	Body    Error
+	Headers CreateOrder409ResponseHeaders
+}
 
 func (response CreateOrder409JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateOrder413JSONResponse Error
+type CreateOrder413ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateOrder413JSONResponse struct {
+	Body    Error
+	Headers CreateOrder413ResponseHeaders
+}
 
 func (response CreateOrder413JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(413)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateOrder500JSONResponse Error
+type CreateOrder429JSONResponse struct{ TooManyRequestsJSONResponse }
+
+func (response CreateOrder429JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateOrder500ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateOrder500JSONResponse struct {
+	Body    Error
+	Headers CreateOrder500ResponseHeaders
+}
 
 func (response CreateOrder500JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
@@ -844,57 +961,105 @@ type GetOrderResponseObject interface {
 	VisitGetOrderResponse(w http.ResponseWriter) error
 }
 
-type GetOrder200JSONResponse Order
+type GetOrder200ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type GetOrder200JSONResponse struct {
+	Body    Order
+	Headers GetOrder200ResponseHeaders
+}
 
 func (response GetOrder200JSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type GetOrder401JSONResponse Error
+type GetOrder401ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type GetOrder401JSONResponse struct {
+	Body    Error
+	Headers GetOrder401ResponseHeaders
+}
 
 func (response GetOrder401JSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(401)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type GetOrder404JSONResponse Error
+type GetOrder404ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type GetOrder404JSONResponse struct {
+	Body    Error
+	Headers GetOrder404ResponseHeaders
+}
 
 func (response GetOrder404JSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type GetOrder500JSONResponse Error
+type GetOrder429JSONResponse struct{ TooManyRequestsJSONResponse }
+
+func (response GetOrder429JSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetOrder500ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type GetOrder500JSONResponse struct {
+	Body    Error
+	Headers GetOrder500ResponseHeaders
+}
 
 func (response GetOrder500JSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
@@ -909,99 +1074,171 @@ type CreateCheckoutResponseObject interface {
 	VisitCreateCheckoutResponse(w http.ResponseWriter) error
 }
 
-type CreateCheckout201JSONResponse Checkout
+type CreateCheckout201ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateCheckout201JSONResponse struct {
+	Body    Checkout
+	Headers CreateCheckout201ResponseHeaders
+}
 
 func (response CreateCheckout201JSONResponse) VisitCreateCheckoutResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(201)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateCheckout400JSONResponse Error
+type CreateCheckout400ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateCheckout400JSONResponse struct {
+	Body    Error
+	Headers CreateCheckout400ResponseHeaders
+}
 
 func (response CreateCheckout400JSONResponse) VisitCreateCheckoutResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(400)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateCheckout401JSONResponse Error
+type CreateCheckout401ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateCheckout401JSONResponse struct {
+	Body    Error
+	Headers CreateCheckout401ResponseHeaders
+}
 
 func (response CreateCheckout401JSONResponse) VisitCreateCheckoutResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(401)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateCheckout404JSONResponse Error
+type CreateCheckout404ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateCheckout404JSONResponse struct {
+	Body    Error
+	Headers CreateCheckout404ResponseHeaders
+}
 
 func (response CreateCheckout404JSONResponse) VisitCreateCheckoutResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateCheckout409JSONResponse Error
+type CreateCheckout409ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateCheckout409JSONResponse struct {
+	Body    Error
+	Headers CreateCheckout409ResponseHeaders
+}
 
 func (response CreateCheckout409JSONResponse) VisitCreateCheckoutResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateCheckout500JSONResponse Error
+type CreateCheckout429JSONResponse struct{ TooManyRequestsJSONResponse }
+
+func (response CreateCheckout429JSONResponse) VisitCreateCheckoutResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateCheckout500ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateCheckout500JSONResponse struct {
+	Body    Error
+	Headers CreateCheckout500ResponseHeaders
+}
 
 func (response CreateCheckout500JSONResponse) VisitCreateCheckoutResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type CreateCheckout502JSONResponse Error
+type CreateCheckout502ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type CreateCheckout502JSONResponse struct {
+	Body    Error
+	Headers CreateCheckout502ResponseHeaders
+}
 
 func (response CreateCheckout502JSONResponse) VisitCreateCheckoutResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(502)
 	_, err := buf.WriteTo(w)
 	return err
@@ -1015,57 +1252,105 @@ type ListWebhookEventsResponseObject interface {
 	VisitListWebhookEventsResponse(w http.ResponseWriter) error
 }
 
-type ListWebhookEvents200JSONResponse WebhookEventList
+type ListWebhookEvents200ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ListWebhookEvents200JSONResponse struct {
+	Body    WebhookEventList
+	Headers ListWebhookEvents200ResponseHeaders
+}
 
 func (response ListWebhookEvents200JSONResponse) VisitListWebhookEventsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type ListWebhookEvents400JSONResponse Error
+type ListWebhookEvents400ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ListWebhookEvents400JSONResponse struct {
+	Body    Error
+	Headers ListWebhookEvents400ResponseHeaders
+}
 
 func (response ListWebhookEvents400JSONResponse) VisitListWebhookEventsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(400)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type ListWebhookEvents401JSONResponse Error
+type ListWebhookEvents401ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ListWebhookEvents401JSONResponse struct {
+	Body    Error
+	Headers ListWebhookEvents401ResponseHeaders
+}
 
 func (response ListWebhookEvents401JSONResponse) VisitListWebhookEventsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(401)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type ListWebhookEvents500JSONResponse Error
+type ListWebhookEvents429JSONResponse struct{ TooManyRequestsJSONResponse }
+
+func (response ListWebhookEvents429JSONResponse) VisitListWebhookEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookEvents500ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ListWebhookEvents500JSONResponse struct {
+	Body    Error
+	Headers ListWebhookEvents500ResponseHeaders
+}
 
 func (response ListWebhookEvents500JSONResponse) VisitListWebhookEventsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
@@ -1079,71 +1364,127 @@ type ReprocessWebhookEventResponseObject interface {
 	VisitReprocessWebhookEventResponse(w http.ResponseWriter) error
 }
 
-type ReprocessWebhookEvent202JSONResponse WebhookEventInspection
+type ReprocessWebhookEvent202ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ReprocessWebhookEvent202JSONResponse struct {
+	Body    WebhookEventInspection
+	Headers ReprocessWebhookEvent202ResponseHeaders
+}
 
 func (response ReprocessWebhookEvent202JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(202)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type ReprocessWebhookEvent401JSONResponse Error
+type ReprocessWebhookEvent401ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ReprocessWebhookEvent401JSONResponse struct {
+	Body    Error
+	Headers ReprocessWebhookEvent401ResponseHeaders
+}
 
 func (response ReprocessWebhookEvent401JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(401)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type ReprocessWebhookEvent404JSONResponse Error
+type ReprocessWebhookEvent404ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ReprocessWebhookEvent404JSONResponse struct {
+	Body    Error
+	Headers ReprocessWebhookEvent404ResponseHeaders
+}
 
 func (response ReprocessWebhookEvent404JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(404)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type ReprocessWebhookEvent409JSONResponse Error
+type ReprocessWebhookEvent409ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ReprocessWebhookEvent409JSONResponse struct {
+	Body    Error
+	Headers ReprocessWebhookEvent409ResponseHeaders
+}
 
 func (response ReprocessWebhookEvent409JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type ReprocessWebhookEvent500JSONResponse Error
+type ReprocessWebhookEvent429JSONResponse struct{ TooManyRequestsJSONResponse }
+
+func (response ReprocessWebhookEvent429JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReprocessWebhookEvent500ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ReprocessWebhookEvent500JSONResponse struct {
+	Body    Error
+	Headers ReprocessWebhookEvent500ResponseHeaders
+}
 
 func (response ReprocessWebhookEvent500JSONResponse) VisitReprocessWebhookEventResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
@@ -1158,45 +1499,89 @@ type ReceiveStripeWebhookResponseObject interface {
 	VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error
 }
 
+type ReceiveStripeWebhook200ResponseHeaders struct {
+	XCorrelationID string
+}
+
 type ReceiveStripeWebhook200Response struct {
+	Headers ReceiveStripeWebhook200ResponseHeaders
 }
 
 func (response ReceiveStripeWebhook200Response) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(200)
 	return nil
 }
 
+type ReceiveStripeWebhook202ResponseHeaders struct {
+	XCorrelationID string
+}
+
 type ReceiveStripeWebhook202Response struct {
+	Headers ReceiveStripeWebhook202ResponseHeaders
 }
 
 func (response ReceiveStripeWebhook202Response) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(202)
 	return nil
 }
 
-type ReceiveStripeWebhook400JSONResponse Error
+type ReceiveStripeWebhook400ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ReceiveStripeWebhook400JSONResponse struct {
+	Body    Error
+	Headers ReceiveStripeWebhook400ResponseHeaders
+}
 
 func (response ReceiveStripeWebhook400JSONResponse) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(400)
 	_, err := buf.WriteTo(w)
 	return err
 }
 
-type ReceiveStripeWebhook500JSONResponse Error
+type ReceiveStripeWebhook429JSONResponse struct{ TooManyRequestsJSONResponse }
+
+func (response ReceiveStripeWebhook429JSONResponse) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReceiveStripeWebhook500ResponseHeaders struct {
+	XCorrelationID string
+}
+
+type ReceiveStripeWebhook500JSONResponse struct {
+	Body    Error
+	Headers ReceiveStripeWebhook500ResponseHeaders
+}
 
 func (response ReceiveStripeWebhook500JSONResponse) VisitReceiveStripeWebhookResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Correlation-ID", fmt.Sprint(response.Headers.XCorrelationID))
 	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
@@ -1461,72 +1846,77 @@ func (sh *strictHandler) ReceiveStripeWebhook(w http.ResponseWriter, r *http.Req
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"s+tl5tLEudoW2TQ74lbY/w0A",
+	"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",
+	"8b8DAA==",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

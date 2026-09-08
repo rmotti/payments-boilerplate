@@ -1,0 +1,75 @@
+name: Prolonged chaos
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prolonged-chaos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  recovery:
+    name: Recovery and backlog matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_DB: payments
+          POSTGRES_USER: payments
+          POSTGRES_PASSWORD: payments_local
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U payments -d payments"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4.3.5-management
+        env:
+          RABBITMQ_DEFAULT_USER: payments
+          RABBITMQ_DEFAULT_PASS: payments_local
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.27.x
+          cache: true
+      - name: Record execution environment
+        run: |
+          uname -a | tee chaos-environment.txt
+          go version | tee -a chaos-environment.txt
+          docker version --format 'Docker {{.Server.Version}}' | tee -a chaos-environment.txt
+          docker image inspect postgres:18.6 rabbitmq:4.3.5-management --format '{{index .RepoTags 0}} {{.Id}}' | tee -a chaos-environment.txt
+      - name: Run prolonged recovery suite
+        run: |
+          set -o pipefail
+          make test-chaos-long 2>&1 | tee chaos.log
+        env:
+          CHAOS_DESTRUCTIVE_ALLOWED: "1"
+          TEST_DATABASE_URL: postgres://payments:payments_local@127.0.0.1:5432/payments?sslmode=disable
+          TEST_RABBITMQ_URL: amqp://payments:payments_local@127.0.0.1:5672/
+      - name: Publish diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-${{ github.sha }}
+          path: |
+            chaos-environment.txt
+            chaos.log

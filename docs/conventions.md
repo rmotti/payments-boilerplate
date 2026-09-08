@@ -109,6 +109,20 @@ pelos casos de uso.
 - Fluxos assíncronos testam duplicação, redelivery, timeout, retry e DLQ.
 - Correções de bugs incluem um teste que falharia antes da correção.
 - Percentual de cobertura não substitui a cobertura dos cenários críticos.
+- Testes em `tests/e2e` usam a build tag `e2e`, executam serialmente e não usam
+  `t.Parallel()`, pois compartilham a topologia RabbitMQ de nomes constantes.
+- Cleanup destrutivo em testes exige uma flag de consentimento explícita,
+  validação de alvo local e allowlists de tabelas e filas. Nunca se trunca ou
+  purga a partir de nomes, URLs ou globs fornecidos livremente.
+- Esperas por estado assíncrono usam polling com deadline e diagnóstico do
+  último estado observado; `time.Sleep` fixo não é mecanismo de sincronização.
+- A suíte e2e e os testes de adapter RabbitMQ não executam simultaneamente
+  quando apontam para a mesma instalação e as mesmas filas.
+- Hooks de falha são instalados apenas por opções explícitas de teste; não há
+  variável de ambiente de produção que ative nack, interrupção ou crash.
+- Chaos curto e determinístico roda em todo pull request. Recuperação real e
+  matriz de backlog usam a tag `chaos`, dependências exclusivas e execução
+  nightly/manual, sendo repetidas no mesmo SHA antes de uma release.
 
 ## Git e pull requests
 

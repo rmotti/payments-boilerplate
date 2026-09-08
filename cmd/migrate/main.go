@@ -12,13 +12,14 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/rmotti/payments-boilerplate/internal/platform/config"
+	"github.com/rmotti/payments-boilerplate/internal/platform/errsanitize"
 	"github.com/rmotti/payments-boilerplate/internal/platform/logging"
 	"go.uber.org/zap"
 )
 
 func main() {
 	if err := run(); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
+		_ = logging.WriteSanitizedError(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -47,7 +48,7 @@ func run() error {
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			logger.Error("postgres shutdown failed", zap.Error(err))
+			logger.Error("postgres shutdown failed", logging.SanitizedError(err))
 		}
 	}()
 	if err := db.PingContext(ctx); err != nil {
@@ -80,9 +81,9 @@ type gooseLogger struct {
 }
 
 func (l gooseLogger) Fatalf(format string, args ...any) {
-	l.logger.Error("migration fatal error", zap.String("message", fmt.Sprintf(format, args...)))
+	l.logger.Error("migration fatal error", zap.String("message", errsanitize.Sanitize(fmt.Sprintf(format, args...))))
 }
 
 func (l gooseLogger) Printf(format string, args ...any) {
-	l.logger.Info("migration", zap.String("message", fmt.Sprintf(format, args...)))
+	l.logger.Info("migration", zap.String("message", errsanitize.Sanitize(fmt.Sprintf(format, args...))))
 }

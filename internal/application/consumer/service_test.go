@@ -138,6 +138,45 @@ func TestHandleTreatsAProcessedEventAsDone(t *testing.T) {
 	}
 }
 
+// Repository.Process owns the transaction and returns only after commit. A
+// process loss in the following window must surface as an error so the broker
+// adapter leaves the original delivery unacknowledged. Its redelivery then
+// observes the already-processed inbox row and becomes a no-op.
+func TestHandleLeavesCommitBeforeAckWindowSafeForRedelivery(t *testing.T) {
+	t.Parallel()
+
+	repository := &fakeRepository{aggregate: paidAggregate()}
+	var injected bool
+	service := NewService(repository, fakeInterpreter{outcome: succeededOutcome()}, Config{},
+		WithTestHooks(TestHooks{AfterCommit: func(_ string, result Result) error {
+			if !result.Applied {
+				t.Fatal("hook ran before the committed effect was reported")
+			}
+			injected = true
+			return errors.New("worker stopped before ack")
+		}}))
+
+	if _, err := service.Handle(context.Background(), "evt_1"); err == nil {
+		t.Fatal("Handle() error = nil, want the delivery left unacknowledged")
+	}
+	if !injected || repository.gotEffect.PaymentStatus != payments.StatusSucceeded {
+		t.Fatal("fault did not occur after the committed effect")
+	}
+
+	// Model what the real repository returns after the committed delivery is
+	// redelivered: no payload interpretation and no second state transition.
+	repository.alreadyProcessed = true
+	service = NewService(repository,
+		fakeInterpreter{err: errors.New("redelivery must not be interpreted")}, Config{})
+	got, err := service.Handle(context.Background(), "evt_1")
+	if err != nil {
+		t.Fatalf("redelivery Handle() error = %v", err)
+	}
+	if got.Disposition != DispositionDone || got.Applied {
+		t.Fatalf("redelivery = %#v, want an acknowledged no-op", got)
+	}
+}
+
 // A stale event must be acknowledged, not retried: it is correct behaviour,
 // not a failure.
 func TestHandleAcknowledgesAStaleEvent(t *testing.T) {
@@ -371,5 +410,107 @@ func TestHandleDeadLettersAnEventThatCannotBeCounted(t *testing.T) {
 	}
 	if got.Disposition != DispositionDead {
 		t.Errorf("Disposition = %s, want dead for an uncountable event", got.Disposition)
+	}
+}
+
+// reportRecorder receives the extended report the metrics observer needs.
+type reportRecorder struct {
+	reports []Report
+}
+
+func (r *reportRecorder) Applied(string, Effect)          {}
+func (r *reportRecorder) NoOp(string, string)             {}
+func (r *reportRecorder) Retrying(string, int, error)     {}
+func (r *reportRecorder) DeadLettered(string, int, error) {}
+
+func (r *reportRecorder) Handled(_ string, report Report) {
+	r.reports = append(r.reports, report)
+}
+
+// A committed transition has to say what moved and between which states, or a
+// transition metric cannot exist without the consumer leaking identifiers.
+func TestHandledReportCarriesTheCommittedTransitions(t *testing.T) {
+	t.Parallel()
+
+	recorder := &reportRecorder{}
+	repository := &fakeRepository{aggregate: paidAggregate()}
+	service := NewService(repository, fakeInterpreter{outcome: succeededOutcome()},
+		Config{}, WithObserver(recorder))
+
+	if _, err := service.Handle(context.Background(), "evt_1"); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(recorder.reports) != 1 {
+		t.Fatalf("reports = %d, want 1", len(recorder.reports))
+	}
+	report := recorder.reports[0]
+	if !report.Applied || report.Disposition != DispositionDone {
+		t.Fatalf("report = %#v, want an applied done disposition", report)
+	}
+	if report.Duration <= 0 {
+		t.Error("report carries no duration")
+	}
+	want := map[Entity]Transition{
+		EntityAttempt: {Entity: EntityAttempt, From: "pending", To: "succeeded"},
+		EntityPayment: {Entity: EntityPayment, From: "pending", To: "succeeded"},
+		EntityOrder:   {Entity: EntityOrder, From: "pending", To: "paid"},
+	}
+	if len(report.Transitions) != len(want) {
+		t.Fatalf("transitions = %#v, want %d", report.Transitions, len(want))
+	}
+	for _, transition := range report.Transitions {
+		if expected, ok := want[transition.Entity]; !ok || transition != expected {
+			t.Errorf("transition %#v is not one of the expected moves", transition)
+		}
+	}
+}
+
+// A redelivery and a stale event are both no-ops, and an operator needs them
+// apart: one is the pipeline working, the other is an ordering question.
+func TestHandledReportSeparatesRedeliveryFromStaleEvent(t *testing.T) {
+	t.Parallel()
+
+	redelivery := &reportRecorder{}
+	service := NewService(&fakeRepository{alreadyProcessed: true},
+		fakeInterpreter{outcome: succeededOutcome()}, Config{}, WithObserver(redelivery))
+	if _, err := service.Handle(context.Background(), "evt_1"); err != nil {
+		t.Fatalf("redelivery Handle() error = %v", err)
+	}
+	if len(redelivery.reports) != 1 || !redelivery.reports[0].AlreadyProcessed {
+		t.Fatalf("redelivery reports = %#v, want one already-processed no-op", redelivery.reports)
+	}
+
+	stale := &reportRecorder{}
+	settled := paidAggregate()
+	settled.PaymentStatus = payments.StatusSucceeded
+	settled.AttemptStatus = payments.AttemptStatusSucceeded
+	service = NewService(&fakeRepository{aggregate: settled},
+		fakeInterpreter{outcome: succeededOutcome()}, Config{}, WithObserver(stale))
+	if _, err := service.Handle(context.Background(), "evt_2"); err != nil {
+		t.Fatalf("stale Handle() error = %v", err)
+	}
+	if len(stale.reports) != 1 {
+		t.Fatalf("stale reports = %d, want 1", len(stale.reports))
+	}
+	if stale.reports[0].Applied || stale.reports[0].AlreadyProcessed {
+		t.Fatalf("stale report = %#v, want a no-op the matrix decided", stale.reports[0])
+	}
+}
+
+// A failure the consumer could not even record must be distinguishable from a
+// classified one: the message is left for redelivery rather than settled.
+func TestHandledReportCarriesTheUnrecordedFailure(t *testing.T) {
+	t.Parallel()
+
+	recorder := &reportRecorder{}
+	service := NewService(
+		&fakeRepository{processErr: ErrAmountMismatch, recordErr: errors.New("postgres down")},
+		fakeInterpreter{outcome: succeededOutcome()}, Config{}, WithObserver(recorder))
+
+	if _, err := service.Handle(context.Background(), "evt_1"); err == nil {
+		t.Fatal("Handle() error = nil, want the unrecorded failure")
+	}
+	if len(recorder.reports) != 1 || recorder.reports[0].Err == nil {
+		t.Fatalf("reports = %#v, want one report carrying the failure", recorder.reports)
 	}
 }

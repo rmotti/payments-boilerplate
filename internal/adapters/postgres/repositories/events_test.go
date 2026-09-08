@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	payments "github.com/rmotti/payments-boilerplate/internal/domain/payments"
 	domain "github.com/rmotti/payments-boilerplate/internal/domain/webhooks"
 	"github.com/rmotti/payments-boilerplate/internal/platform/database"
+	"github.com/rmotti/payments-boilerplate/internal/platform/errsanitize"
 )
 
 // openConsumerTestDatabase skips the test when no database is configured, and
@@ -425,5 +427,40 @@ func TestEventRepositoryClosesAnEntryWhenTheRetryBudgetIsSpent(t *testing.T) {
 
 	if status, attempts := eventState(t, db, eventID); status != "failed" || attempts != 3 {
 		t.Errorf("event = %s with %d attempts, want failed with 3", status, attempts)
+	}
+}
+
+// TestEventRepositoryRecordFailureSanitizesLastError guards the E8b invariant
+// that RecordFailure never persists a cause verbatim: the inbox last_error
+// column is returned by the operational API, so a credential that reaches
+// err.Error() here must not survive into the row. The sentinels are unique so
+// a leak cannot be confused with anything a real failure would legitimately
+// contain.
+func TestEventRepositoryRecordFailureSanitizesLastError(t *testing.T) {
+	db := openConsumerTestDatabase(t)
+	repository := NewEventRepository(db.SQL)
+	ctx := context.Background()
+
+	const sentinel = "sentinel-inbox-EAF3B9"
+	cause := fmt.Errorf(
+		"dial failed: postgres://payments:%s@db.internal:5432/payments and Authorization: Bearer %s",
+		sentinel, sentinel,
+	)
+
+	eventID := seedInboxEvent(t, db, "sanitize")
+	if _, _, err := repository.RecordFailure(ctx, eventID, cause, false, 3); err != nil {
+		t.Fatalf("RecordFailure() error = %v", err)
+	}
+
+	var lastError string
+	if err := db.SQL.QueryRowContext(ctx,
+		"SELECT last_error FROM webhook_events WHERE id = $1", eventID).Scan(&lastError); err != nil {
+		t.Fatalf("read last_error: %v", err)
+	}
+	if strings.Contains(lastError, sentinel) {
+		t.Fatalf("last_error = %q, leaked the sentinel credential", lastError)
+	}
+	if !strings.Contains(lastError, errsanitize.Redacted) {
+		t.Fatalf("last_error = %q, want the stable redaction marker", lastError)
 	}
 }

@@ -35,6 +35,9 @@ type ConsumerConfig struct {
 }
 
 // ConsumerObserver reports what the consumer is doing to its messages.
+//
+// An observer may also implement DeliveryObserver to learn about every
+// delivery the broker hands over, before it is handled.
 type ConsumerObserver interface {
 	// Rejected reports a message that could not be read and will be explicitly
 	// republished to the dead letter rather than handled as an inbox reference.
@@ -43,6 +46,14 @@ type ConsumerObserver interface {
 	Republished(messageID, destination string, attempts int)
 	// Failed reports a message left unacknowledged for redelivery.
 	Failed(messageID string, cause error)
+}
+
+// DeliveryObserver is the optional extension of ConsumerObserver for the
+// deliveries themselves.
+type DeliveryObserver interface {
+	// Redelivered reports a delivery the broker flagged as a redelivery: the
+	// message was handed out before and never acknowledged.
+	Redelivered(messageID string)
 }
 
 // Consumer applies webhook messages with manual acknowledgement.
@@ -55,8 +66,9 @@ type Consumer struct {
 	connection *Connection
 	publisher  *Connection
 	handler    Handler
-	observer   ConsumerObserver
+	observers  []ConsumerObserver
 	config     ConsumerConfig
+	testHooks  TestHooks
 }
 
 // NewConsumer wires a consumer to its broker connections.
@@ -74,9 +86,19 @@ func NewConsumer(connection, publisher *Connection, handler Handler, config Cons
 	return &Consumer{connection: connection, publisher: publisher, handler: handler, config: config}
 }
 
-// WithObserver reports republications and rejections.
+// WithObserver reports republications and rejections. It may be called more
+// than once; observers are notified in the order they were added.
 func (c *Consumer) WithObserver(observer ConsumerObserver) *Consumer {
-	c.observer = observer
+	if observer != nil {
+		c.observers = append(c.observers, observer)
+	}
+	return c
+}
+
+// WithTestHooks installs deterministic protocol-boundary hooks. Production
+// composition never calls this method.
+func (c *Consumer) WithTestHooks(hooks TestHooks) *Consumer {
+	c.testHooks = hooks
 	return c
 }
 
@@ -220,14 +242,22 @@ func (c *Consumer) consume(ctx context.Context) error {
 // deliberately left unacknowledged and the consuming session must be closed so
 // the broker redelivers it after Run's reconnect backoff.
 func (c *Consumer) handle(ctx context.Context, delivery amqp.Delivery) error {
+	if delivery.Redelivered {
+		for _, observer := range c.observers {
+			if extended, ok := observer.(DeliveryObserver); ok {
+				extended.Redelivered(delivery.MessageId)
+			}
+		}
+	}
+
 	eventID, err := webhookEventID(delivery.Body)
 	if err != nil {
 		// The message is unreadable, so no amount of retrying helps and there
 		// is no inbox row to record against. Its bytes are still valuable for
 		// diagnosis, so publish them explicitly and confirm the copy just like
 		// every other dead-letter path.
-		if c.observer != nil {
-			c.observer.Rejected(delivery.MessageId, err)
+		for _, observer := range c.observers {
+			observer.Rejected(delivery.MessageId, err)
 		}
 		handling := app.Handling{Disposition: app.DispositionDead, Cause: err}
 		if deadErr := c.republishToDeadLetter(ctx, delivery, handling); deadErr != nil {
@@ -282,8 +312,8 @@ func (c *Consumer) republishForRetry(
 	if err := c.republish(ctx, tier.Exchange(), delivery); err != nil {
 		return fmt.Errorf("republish for retry: %w", err)
 	}
-	if c.observer != nil {
-		c.observer.Republished(delivery.MessageId, tier.Queue(), handling.Attempts)
+	for _, observer := range c.observers {
+		observer.Republished(delivery.MessageId, tier.Queue(), handling.Attempts)
 	}
 	return c.ack(delivery)
 }
@@ -304,8 +334,8 @@ func (c *Consumer) republishToDeadLetter(
 	if err := c.republish(ctx, DeadLetterExchange, delivery); err != nil {
 		return fmt.Errorf("republish to dead letter: %w", err)
 	}
-	if c.observer != nil {
-		c.observer.Republished(delivery.MessageId, DeadLetterQueue, handling.Attempts)
+	for _, observer := range c.observers {
+		observer.Republished(delivery.MessageId, DeadLetterQueue, handling.Attempts)
 	}
 	return c.ack(delivery)
 }
@@ -317,6 +347,16 @@ func (c *Consumer) republishToDeadLetter(
 // channel, but it keeps a failed publication from taking the consuming channel
 // down with it, and republications are the exception rather than the rule.
 func (c *Consumer) republish(ctx context.Context, exchange string, delivery amqp.Delivery) error {
+	if c.testHooks.Republish != nil {
+		if err := c.testHooks.Republish(ctx, exchange, delivery); err != nil {
+			return err
+		}
+		if c.testHooks.AfterRepublishConfirmed != nil {
+			return c.testHooks.AfterRepublishConfirmed(exchange, delivery)
+		}
+		return nil
+	}
+
 	publishCtx, cancel := context.WithTimeout(ctx, republishTimeout)
 	defer cancel()
 
@@ -363,11 +403,21 @@ func (c *Consumer) republish(ctx context.Context, exchange string, delivery amqp
 				returned.RoutingKey, returned.ReplyCode, returned.ReplyText)
 		default:
 		}
+		if c.testHooks.AfterRepublishConfirmed != nil {
+			if err := c.testHooks.AfterRepublishConfirmed(exchange, delivery); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 }
 
 func (c *Consumer) ack(delivery amqp.Delivery) error {
+	if c.testHooks.BeforeAck != nil {
+		if err := c.testHooks.BeforeAck(delivery); err != nil {
+			return err
+		}
+	}
 	// multiple is false: each message is settled on its own, because workers
 	// finish out of order and a cumulative ack would settle messages that are
 	// still being applied.
@@ -378,8 +428,8 @@ func (c *Consumer) ack(delivery amqp.Delivery) error {
 }
 
 func (c *Consumer) failed(messageID string, cause error) error {
-	if c.observer != nil {
-		c.observer.Failed(messageID, cause)
+	for _, observer := range c.observers {
+		observer.Failed(messageID, cause)
 	}
 	return cause
 }

@@ -121,10 +121,12 @@ O inbox duravel dos eventos recebidos. A linha e inserida dentro da requisicao
 do webhook, antes de qualquer efeito de negocio, e so depois disso a API
 responde sucesso ao provedor.
 
-O evento e guardado em duas formas. `raw_payload` preserva os bytes exatos que o
-provedor assinou, pois `jsonb` reordena chaves e descarta formatacao, e esses
-bytes desaparecem junto com a requisicao. `payload` guarda o mesmo evento
-desserializado, para consulta e reprocessamento.
+O evento e guardado em duas formas. `raw_payload` preserva o corpo exato cuja
+assinatura foi verificada durante a requisicao, pois `jsonb` reordena chaves e
+descarta formatacao, e esses bytes desaparecem junto com a requisicao. O header
+de assinatura nao e persistido, portanto `raw_payload` sozinho nao permite
+reverificacao posterior nem constitui prova criptografica independente.
+`payload` guarda o mesmo evento desserializado, para consulta e reprocessamento.
 
 Um evento cujo tipo a aplicacao nao trata tambem e gravado, com status
 `skipped`, para manter a trilha de auditoria sem enfileirar trabalho.

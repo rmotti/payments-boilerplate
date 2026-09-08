@@ -147,10 +147,22 @@ política nega acesso por padrão e libera explicitamente apenas health e o
 webhook assinado, cuja confiança vem da verificação da assinatura sobre o corpo
 bruto. O domínio e os casos de uso não conhecem headers ou credenciais.
 
-O comando `api` atual serve Swagger UI e o documento OpenAPI publicamente em
-qualquer `APP_ENV`. Desabilitar ou proteger essa documentação fora do ambiente
-de desenvolvimento permanece na Fase 4. TLS, gestão de secrets e controles de
-borda continuam sob responsabilidade de quem implanta o projeto.
+A documentação é opt-in por `DOCS_ENABLED`, desligada por padrão em todos os
+ambientes, e exige `X-API-Key` fora de `development`. Toda resposta carrega
+headers de segurança, nenhuma emite CORS e `X-Forwarded-For` só é acreditado
+quando o peer pertence a `TRUSTED_PROXY_CIDRS`. TLS, gestão de secrets e
+controles de borda continuam sob responsabilidade de quem implanta o projeto.
+O modelo completo está no
+[ADR 0016](decisions/0016-http-surface-and-client-identity.md).
+
+Toda operação também passa por rate limiting, aplicado antes do parsing, da
+autenticação e do handler. Negócio, operações e documentação usam um limitador
+grosseiro chaveado pelo mesmo endereço que aquele ADR resolve; as operações
+autenticadas somam um limite por impressão criptográfica da credencial. Webhook
+e health usam baldes próprios nessa camada externa, sendo o primeiro global para
+que o endereço da Stripe nunca funcione como identidade. Os baldes são
+token buckets em memória, com capacidade e TTL limitados, e valem por processo.
+A política está no [ADR 0018](decisions/0018-rate-limiting.md).
 
 O modelo completo, alternativas e limitações estão no
 [ADR 0010](decisions/0010-route-access-model.md).
@@ -314,8 +326,17 @@ PostgreSQL e RabbitMQ permanecem na rede privada do projeto, e o broker usa
 volume persistente. Migrations rodam como etapa anterior ao deploy da API.
 
 O ambiente local pode habilitar Grafana, Prometheus, Tempo, Loki e o Collector
-por meio do profile de observabilidade do Docker Compose. Em produção, o destino
-OTLP é configuração externa e não faz parte do domínio.
+por meio do profile de observabilidade do Docker Compose, que também provisiona
+o dashboard versionado do pipeline. Em produção, o destino OTLP é configuração
+externa e não faz parte do domínio.
+
+As métricas da aplicação vivem em `internal/platform/metrics`, único pacote fora
+de `internal/platform/telemetry` que importa a API de métricas do OpenTelemetry.
+Ele implementa as interfaces de observer que aplicação e adapters já declaravam,
+de modo que domínio e casos de uso permanecem sem dependência de telemetria.
+Toda label passa por uma allowlist explícita, e estado como backlog e
+profundidade de fila é amostrado em background, nunca dentro de um callback de
+coleta. Ver [ADR 0015](decisions/0015-application-metrics-and-cardinality.md).
 
 Depois de uma implementação real e estável, as fronteiras reutilizáveis podem
 ser extraídas:
@@ -407,9 +428,13 @@ POST /v1/orders/{orderId}/checkout
 GET  /v1/orders/{orderId}
 POST /v1/webhooks/stripe
 GET  /health
-GET  /docs
-GET  /openapi.yaml
+GET  /docs          (opt-in; autenticado fora de development)
+GET  /docs/         (opt-in; autenticado fora de development)
+GET  /openapi.yaml  (opt-in; autenticado fora de development)
 ```
+
+O worker publica somente `GET /health`. As demais operações do contrato não são
+registradas naquele processo.
 
 O contrato executável detalhado está em [Contrato da API](api.md).
 

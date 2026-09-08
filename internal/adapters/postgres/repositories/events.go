@@ -12,6 +12,7 @@ import (
 	app "github.com/rmotti/payments-boilerplate/internal/application/consumer"
 	payments "github.com/rmotti/payments-boilerplate/internal/domain/payments"
 	domain "github.com/rmotti/payments-boilerplate/internal/domain/webhooks"
+	"github.com/rmotti/payments-boilerplate/internal/platform/errsanitize"
 )
 
 // processTimeout bounds the whole applying transaction. It is short because
@@ -283,15 +284,13 @@ func (r *EventRepository) Backlog(ctx context.Context) (pending, failed int64, o
 	return row.Pending, row.Failed, time.Duration(row.OldestAgeSeconds * float64(time.Second)), nil
 }
 
+// nullableText bounds a note the consumer itself composed (not an error
+// message), so it needs truncation but not credential redaction.
 func nullableText(value string) sql.NullString {
 	if value == "" {
 		return sql.NullString{}
 	}
-	const maxLength = 500
-	if len(value) > maxLength {
-		value = value[:maxLength]
-	}
-	return sql.NullString{String: value, Valid: true}
+	return sql.NullString{String: errsanitize.Truncate(value, errsanitize.MaxLength), Valid: true}
 }
 
 var _ app.Repository = (*EventRepository)(nil)

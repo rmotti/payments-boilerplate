@@ -20,6 +20,54 @@ func (f handlerFunc) Handle(ctx context.Context, eventID string) (app.Handling, 
 	return f(ctx, eventID)
 }
 
+type recordingAcknowledger struct {
+	mu       sync.Mutex
+	acks     int
+	nacks    int
+	rejects  int
+	onAction func(string)
+}
+
+func (a *recordingAcknowledger) Ack(uint64, bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.acks++
+	if a.onAction != nil {
+		a.onAction("ack")
+	}
+	return nil
+}
+
+func (a *recordingAcknowledger) Nack(uint64, bool, bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.nacks++
+	return nil
+}
+
+func (a *recordingAcknowledger) Reject(uint64, bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.rejects++
+	return nil
+}
+
+func (a *recordingAcknowledger) counts() (acks, nacks, rejects int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.acks, a.nacks, a.rejects
+}
+
+func testDelivery(acknowledger amqp.Acknowledger) amqp.Delivery {
+	return amqp.Delivery{
+		Acknowledger: acknowledger,
+		DeliveryTag:  1,
+		MessageId:    "msg_test",
+		RoutingKey:   "payment.webhook.checkout.completed",
+		Body:         []byte(`{"webhookEventId":"evt_test"}`),
+	}
+}
+
 // recordingObserver collects what the consumer did, for assertions.
 type recordingObserver struct {
 	mu           sync.Mutex
@@ -166,6 +214,116 @@ func startConsumer(t *testing.T, consumer *Consumer) {
 			t.Error("consumer did not stop within the shutdown budget")
 		}
 	})
+}
+
+func TestConsumerAcknowledgesOnlyAfterCommittedHandling(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	acknowledger := &recordingAcknowledger{onAction: func(action string) {
+		order = append(order, action)
+	}}
+	consumer := NewConsumer(nil, nil, handlerFunc(func(context.Context, string) (app.Handling, error) {
+		order = append(order, "commit")
+		return app.Handling{Disposition: app.DispositionDone, Applied: true}, nil
+	}), ConsumerConfig{})
+	consumer.WithTestHooks(TestHooks{BeforeAck: func(amqp.Delivery) error {
+		order = append(order, "before-ack")
+		return nil
+	}})
+
+	if err := consumer.handle(context.Background(), testDelivery(acknowledger)); err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+	if got := fmt.Sprint(order); got != "[commit before-ack ack]" {
+		t.Fatalf("order = %s, want commit before acknowledgement", got)
+	}
+}
+
+func TestConsumerConfirmsRetryCopyBeforeAcknowledgingOriginal(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	acknowledger := &recordingAcknowledger{onAction: func(action string) {
+		order = append(order, action)
+	}}
+	tier := RetryTier{Delay: time.Second}
+	consumer := NewConsumer(nil, nil, handlerFunc(func(context.Context, string) (app.Handling, error) {
+		return app.Handling{Disposition: app.DispositionRetry, Attempts: 1}, nil
+	}), ConsumerConfig{RetryTiers: []RetryTier{tier}})
+	consumer.WithTestHooks(TestHooks{
+		Republish: func(_ context.Context, exchange string, _ amqp.Delivery) error {
+			if exchange != tier.Exchange() {
+				t.Fatalf("exchange = %q, want %q", exchange, tier.Exchange())
+			}
+			order = append(order, "publish")
+			return nil
+		},
+		AfterRepublishConfirmed: func(string, amqp.Delivery) error {
+			order = append(order, "confirm")
+			return nil
+		},
+		BeforeAck: func(amqp.Delivery) error {
+			order = append(order, "before-ack")
+			return nil
+		},
+	})
+
+	if err := consumer.handle(context.Background(), testDelivery(acknowledger)); err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+	if got := fmt.Sprint(order); got != "[publish confirm before-ack ack]" {
+		t.Fatalf("order = %s, want confirmed copy before acknowledgement", got)
+	}
+}
+
+func TestConsumerLeavesOriginalUnacknowledgedWhenRepublishFails(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("retry exchange unavailable")
+	acknowledger := &recordingAcknowledger{}
+	consumer := NewConsumer(nil, nil, handlerFunc(func(context.Context, string) (app.Handling, error) {
+		return app.Handling{Disposition: app.DispositionRetry, Attempts: 1}, nil
+	}), ConsumerConfig{RetryTiers: []RetryTier{{Delay: time.Second}}})
+	consumer.WithTestHooks(TestHooks{
+		Republish: func(context.Context, string, amqp.Delivery) error { return wantErr },
+	})
+
+	err := consumer.handle(context.Background(), testDelivery(acknowledger))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("handle() error = %v, want %v", err, wantErr)
+	}
+	if acks, nacks, rejects := acknowledger.counts(); acks != 0 || nacks != 0 || rejects != 0 {
+		t.Fatalf("settlements = ack %d/nack %d/reject %d, want original untouched",
+			acks, nacks, rejects)
+	}
+}
+
+func TestConsumerLeavesOriginalUnacknowledgedAfterConfirmedCopyIfAckWindowFails(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("worker stopped after republish confirm")
+	acknowledger := &recordingAcknowledger{}
+	consumer := NewConsumer(nil, nil, handlerFunc(func(context.Context, string) (app.Handling, error) {
+		return app.Handling{Disposition: app.DispositionDead, Attempts: 10}, nil
+	}), ConsumerConfig{})
+	consumer.WithTestHooks(TestHooks{
+		Republish: func(context.Context, string, amqp.Delivery) error { return nil },
+		AfterRepublishConfirmed: func(exchange string, _ amqp.Delivery) error {
+			if exchange != DeadLetterExchange {
+				t.Fatalf("exchange = %q, want dead-letter exchange", exchange)
+			}
+			return wantErr
+		},
+	})
+
+	err := consumer.handle(context.Background(), testDelivery(acknowledger))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("handle() error = %v, want %v", err, wantErr)
+	}
+	if acks, _, _ := acknowledger.counts(); acks != 0 {
+		t.Fatalf("acks = %d, want the confirmed copy to coexist with an unacknowledged original", acks)
+	}
 }
 
 func TestConsumerAcknowledgesAppliedMessages(t *testing.T) {
@@ -374,5 +532,73 @@ func TestTierForWalksTheLadderAndHoldsAtTheLast(t *testing.T) {
 
 	if _, ok := TierFor(nil, 1); ok {
 		t.Error("TierFor(nil) reported a tier, want none")
+	}
+}
+
+// deliveryRecorder implements both consumer observer interfaces, exactly as
+// the metrics observer does, so the extension is exercised the way production
+// wires it.
+type deliveryRecorder struct {
+	recordingObserver
+
+	redelivered atomic.Int32
+}
+
+func (r *deliveryRecorder) Redelivered(string) { r.redelivered.Add(1) }
+
+// The worker installs the logging observer and the metrics one side by side,
+// so both have to receive every event.
+func TestConsumerNotifiesEveryRegisteredObserver(t *testing.T) {
+	t.Parallel()
+
+	first, second := &recordingObserver{}, &recordingObserver{}
+	consumer := NewConsumer(nil, nil, nil, ConsumerConfig{}).
+		WithObserver(first).
+		WithObserver(second)
+
+	if err := consumer.failed("msg_1", errors.New("unrecorded")); err == nil {
+		t.Fatal("failed() error = nil, want the cause returned unchanged")
+	}
+
+	for name, observer := range map[string]*recordingObserver{"first": first, "second": second} {
+		if _, _, failed := observer.counts(); failed != 1 {
+			t.Errorf("%s observer saw %d failures, want 1", name, failed)
+		}
+	}
+}
+
+// A redelivery is the broker telling us a message came back. It has to reach
+// the observer before the message is handled, and only when the flag is set.
+func TestConsumerReportsRedeliveredMessages(t *testing.T) {
+	t.Parallel()
+
+	recorder := &deliveryRecorder{}
+	// The settlement paths need a live channel, so the ack window is what
+	// ends each call here. What is under test is the observer notification,
+	// which happens before any of that.
+	settlementFailure := errors.New("no channel in this test")
+	consumer := NewConsumer(nil, nil, nil, ConsumerConfig{}).
+		WithObserver(recorder).
+		WithTestHooks(TestHooks{
+			Republish: func(context.Context, string, amqp.Delivery) error { return settlementFailure },
+		})
+
+	ctx := context.Background()
+	// An unreadable body takes the dead-letter path without reaching the
+	// handler, which is what lets this exercise the delivery observer alone.
+	if err := consumer.handle(ctx, amqp.Delivery{MessageId: "msg_first", Body: []byte("{")}); err == nil {
+		t.Fatal("handle() error = nil, want the injected settlement failure")
+	}
+	if got := recorder.redelivered.Load(); got != 0 {
+		t.Fatalf("redeliveries after a first delivery = %d, want 0", got)
+	}
+
+	if err := consumer.handle(ctx, amqp.Delivery{
+		MessageId: "msg_first", Body: []byte("{"), Redelivered: true,
+	}); err == nil {
+		t.Fatal("handle() redelivery error = nil, want the injected settlement failure")
+	}
+	if got := recorder.redelivered.Load(); got != 1 {
+		t.Fatalf("redeliveries = %d, want 1", got)
 	}
 }

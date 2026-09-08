@@ -206,6 +206,31 @@ func TestTransientFailuresNeverAbandonAMessage(t *testing.T) {
 	}
 }
 
+func TestBrokerNackAndMandatoryReturnKeepMessageEligible(t *testing.T) {
+	t.Parallel()
+
+	for _, brokerErr := range []error{ErrNotConfirmed, ErrNotRouted} {
+		brokerErr := brokerErr
+		t.Run(brokerErr.Error(), func(t *testing.T) {
+			t.Parallel()
+			repository := &stubRepository{batches: [][]Lease{{lease("msg_retry", 0)}}}
+			service := newService(repository, &stubPublisher{err: brokerErr}, Config{})
+
+			result, err := service.RunOnce(context.Background())
+			if err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			if result.Retrying != 1 || len(repository.retries) != 1 {
+				t.Fatalf("result/retries = %#v/%v, want the row eligible for retry",
+					result, repository.retries)
+			}
+			if len(repository.published) != 0 || len(repository.failed) != 0 {
+				t.Fatalf("published/failed = %v/%v, want neither", repository.published, repository.failed)
+			}
+		})
+	}
+}
+
 // Only an explicitly permanent error stops the retries.
 func TestPermanentFailureAbandonsMessage(t *testing.T) {
 	t.Parallel()
@@ -476,6 +501,49 @@ func TestStorageFailureDuringSettlementSurfaces(t *testing.T) {
 	}
 }
 
+// A broker confirm and PostgreSQL settlement are necessarily separate. If the
+// relay stops in that gap, the lease remains eligible and the next relay may
+// publish the same message again. The durable consumer is responsible for
+// making that duplicate harmless.
+func TestConfirmedMessageIsRepublishedAfterFailureBeforeSettlement(t *testing.T) {
+	t.Parallel()
+
+	repository := &stubRepository{batches: [][]Lease{
+		{lease("msg_1", 0)},
+		{lease("msg_1", 1)},
+	}}
+	publisher := &stubPublisher{}
+	var injections atomic.Int32
+	service := newService(repository, publisher, Config{}, WithTestHooks(TestHooks{
+		BeforeSettlement: func(domain.Message) error {
+			if injections.Add(1) == 1 {
+				return errors.New("relay stopped after confirm")
+			}
+			return nil
+		},
+	}))
+
+	if _, err := service.RunOnce(context.Background()); err == nil {
+		t.Fatal("first RunOnce() error = nil, want the confirm/settlement failure")
+	}
+	if len(repository.published) != 0 || len(repository.retries) != 0 {
+		t.Fatalf("outcomes after injected stop = published %v, retries %v; want the lease untouched",
+			repository.published, repository.retries)
+	}
+
+	result, err := service.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second RunOnce() error = %v", err)
+	}
+	if publisher.calls.Load() != 2 {
+		t.Fatalf("publish calls = %d, want the intentional republication", publisher.calls.Load())
+	}
+	if result.Published != 1 || len(repository.published) != 1 {
+		t.Fatalf("result/repository = %#v/%v, want exactly one durable settlement",
+			result, repository.published)
+	}
+}
+
 // Publication uses a local monotonic window that starts before PostgreSQL
 // creates the lease and ends early enough to leave time for settlement. It
 // must not interpret the database's absolute timestamp with this machine's
@@ -516,4 +584,130 @@ type publisherFunc func(context.Context, domain.Message) error
 
 func (f publisherFunc) Publish(ctx context.Context, message domain.Message) error {
 	return f(ctx, message)
+}
+
+// cycleRecorder receives the extended reports the metrics observer needs. It
+// implements both interfaces, exactly as that observer does.
+type cycleRecorder struct {
+	recordingObserver
+
+	publications []Publication
+	cycles       []Cycle
+}
+
+func (r *cycleRecorder) PublicationSettled(publication Publication) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.publications = append(r.publications, publication)
+}
+
+func (r *cycleRecorder) CycleCompleted(cycle Cycle) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cycles = append(r.cycles, cycle)
+}
+
+func (r *cycleRecorder) snapshot() ([]Publication, []Cycle) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Publication(nil), r.publications...), append([]Cycle(nil), r.cycles...)
+}
+
+// The relay reports every publication, not only the ones that need attention.
+// A metrics observer needs the successes too, and needs them classified.
+func TestEveryPublicationIsReportedWithItsOutcome(t *testing.T) {
+	t.Parallel()
+
+	recorder := &cycleRecorder{}
+	repository := &stubRepository{batches: [][]Lease{{lease("msg_ok", 0)}}}
+	service := newService(repository, &stubPublisher{}, Config{}, WithObserver(recorder))
+
+	if _, err := service.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+
+	publications, cycles := recorder.snapshot()
+	if len(publications) != 1 || publications[0].Outcome != OutcomePublished {
+		t.Fatalf("publications = %#v, want one published", publications)
+	}
+	if publications[0].Attempts != 1 {
+		t.Errorf("attempts = %d, want 1", publications[0].Attempts)
+	}
+	if len(cycles) != 1 || cycles[0].Err != nil || cycles[0].Result.Published != 1 {
+		t.Fatalf("cycles = %#v, want one successful cycle publishing one message", cycles)
+	}
+}
+
+func TestTransientAndPermanentPublicationsAreReportedDistinctly(t *testing.T) {
+	t.Parallel()
+
+	transient := &cycleRecorder{}
+	service := newService(
+		&stubRepository{batches: [][]Lease{{lease("msg_transient", 0)}}},
+		&stubPublisher{err: ErrNotConfirmed}, Config{}, WithObserver(transient))
+	if _, err := service.RunOnce(context.Background()); err != nil {
+		t.Fatalf("transient RunOnce() error = %v", err)
+	}
+	publications, _ := transient.snapshot()
+	if len(publications) != 1 || publications[0].Outcome != OutcomeRetrying {
+		t.Fatalf("transient publications = %#v, want one retrying", publications)
+	}
+	if !errors.Is(publications[0].Cause, ErrNotConfirmed) {
+		t.Errorf("transient cause = %v, want the broker confirmation error", publications[0].Cause)
+	}
+
+	permanent := &cycleRecorder{}
+	service = newService(
+		&stubRepository{batches: [][]Lease{{lease("msg_permanent", 0)}}},
+		&stubPublisher{err: Permanent(errors.New("cannot encode"))}, Config{}, WithObserver(permanent))
+	if _, err := service.RunOnce(context.Background()); err != nil {
+		t.Fatalf("permanent RunOnce() error = %v", err)
+	}
+	publications, _ = permanent.snapshot()
+	if len(publications) != 1 || publications[0].Outcome != OutcomeFailed {
+		t.Fatalf("permanent publications = %#v, want one failed", publications)
+	}
+}
+
+// A cycle that could not lease has to name the stage, or an alert cannot tell
+// a database problem from a settlement one.
+func TestAFailedCycleNamesItsStage(t *testing.T) {
+	t.Parallel()
+
+	recorder := &cycleRecorder{}
+	service := newService(
+		&stubRepository{leaseErr: errors.New("connection refused")},
+		&stubPublisher{}, Config{}, WithObserver(recorder))
+
+	if _, err := service.RunOnce(context.Background()); err == nil {
+		t.Fatal("RunOnce() error = nil, want the lease failure")
+	}
+	_, cycles := recorder.snapshot()
+	if len(cycles) != 1 || cycles[0].Stage != StageLease {
+		t.Fatalf("cycles = %#v, want one cycle failing at the lease stage", cycles)
+	}
+}
+
+// Both observers must be notified: the worker keeps the logging one and adds
+// the metrics one beside it.
+func TestObserversAreNotifiedInOrder(t *testing.T) {
+	t.Parallel()
+
+	first, second := &recordingObserver{}, &recordingObserver{}
+	service := newService(
+		&stubRepository{batches: [][]Lease{{lease("msg_permanent", 0)}}},
+		&stubPublisher{err: Permanent(errors.New("cannot encode"))},
+		Config{}, WithObserver(first), WithObserver(second))
+
+	if _, err := service.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	for name, observer := range map[string]*recordingObserver{"first": first, "second": second} {
+		observer.mu.Lock()
+		abandoned := len(observer.abandoned)
+		observer.mu.Unlock()
+		if abandoned != 1 {
+			t.Errorf("%s observer saw %d abandoned messages, want 1", name, abandoned)
+		}
+	}
 }

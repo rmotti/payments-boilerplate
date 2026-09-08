@@ -10,6 +10,7 @@ import (
 	dbgen "github.com/rmotti/payments-boilerplate/internal/adapters/postgres/queries"
 	app "github.com/rmotti/payments-boilerplate/internal/application/webhooks"
 	domain "github.com/rmotti/payments-boilerplate/internal/domain/webhooks"
+	"github.com/rmotti/payments-boilerplate/internal/platform/errsanitize"
 )
 
 // List returns a bounded operational view without exposing stored provider
@@ -143,7 +144,10 @@ func operationNullableString(value sql.NullString) string {
 	if !value.Valid {
 		return ""
 	}
-	return value.String
+	// Sanitize again at the read boundary so a database created before E8b, or
+	// a value written manually by an operator, cannot expose a legacy secret
+	// through the operational API.
+	return errsanitize.Sanitize(value.String)
 }
 
 func operationNullableTime(value sql.NullTime) *time.Time {

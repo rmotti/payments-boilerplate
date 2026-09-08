@@ -66,13 +66,13 @@ múltiplos provedores.
 
 ## Fase 4 — Qualidade para publicação
 
-- [ ] Cobrir cenários críticos com testes de integração.
+- [x] Cobrir cenários críticos com testes de integração.
 - [ ] Adicionar dados e comandos reproduzíveis de sandbox.
-- [ ] Verificar que exemplos OpenAPI correspondem às respostas reais.
-- [ ] Testar interrupções entre PostgreSQL, relay, RabbitMQ e consumer.
-- [ ] Publicar métricas de outbox, filas, retries e DLQ.
+- [x] Verificar que exemplos OpenAPI correspondem às respostas reais.
+- [x] Testar interrupções entre PostgreSQL, relay, RabbitMQ e consumer.
+- [x] Publicar métricas de outbox, filas, retries e DLQ.
 - [ ] Aplicar rate limiting às operações públicas e aos endpoints sujeitos a abuso.
-- [ ] Desabilitar ou proteger o Swagger UI fora do ambiente de desenvolvimento.
+- [x] Desabilitar ou proteger o Swagger UI fora do ambiente de desenvolvimento.
 - [ ] Revisar logs, secrets e tratamento de dados pessoais.
 - [ ] Criar guia de implantação e checklist operacional.
 - [ ] Criar guia de contribuição e templates do repositório.

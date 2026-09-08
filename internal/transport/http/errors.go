@@ -21,6 +21,7 @@ const (
 	codeProviderUnavailable       = "provider_unavailable"
 	codeWebhookEventNotFound      = "webhook_event_not_found"
 	codeWebhookEventNotReplayable = "webhook_event_not_replayable"
+	codeRateLimited               = "rate_limited"
 	codeNotImplemented            = "not_implemented"
 	codeInternalError             = "internal_error"
 )
@@ -37,7 +38,11 @@ func newError(ctx context.Context, code, message string) openapi.Error {
 
 // writeError renders an error outside the strict handler, for failures that
 // happen before or after the operation runs (binding, decoding, panics).
+//
+// The strict headers are reapplied here because an error can be written after
+// a handler relaxed them for its own body, as the documentation page does.
 func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
+	setStrictSecurityHeaders(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(newError(r.Context(), code, message))

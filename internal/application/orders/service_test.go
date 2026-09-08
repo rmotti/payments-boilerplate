@@ -200,3 +200,60 @@ func TestCreateFailsWhenIDGenerationFails(t *testing.T) {
 		t.Fatalf("repository received %d orders, want none", len(repo.created))
 	}
 }
+
+// idempotencyRecorder is the surface the metrics observer sees: two counts,
+// with nothing about the order itself.
+type idempotencyRecorder struct {
+	replays   int
+	conflicts int
+}
+
+func (r *idempotencyRecorder) Replayed()   { r.replays++ }
+func (r *idempotencyRecorder) Conflicted() { r.conflicts++ }
+
+func TestObserverSeparatesEquivalentReplayFromConflict(t *testing.T) {
+	t.Parallel()
+
+	original := domain.Order{
+		ID: "ord_original", Status: domain.StatusPending, Amount: 10000,
+		Currency: domain.BRL, ProductID: "product_demo", Quantity: 1, IdempotencyKey: "key-1",
+	}
+
+	replay := &idempotencyRecorder{}
+	if _, err := newService(&fakeRepository{existing: &original}, WithObserver(replay)).
+		Create(context.Background(), CreateInput{
+			ProductID: "product_demo", Quantity: 1, IdempotencyKey: "key-1",
+		}); err != nil {
+		t.Fatalf("Create() replay error = %v", err)
+	}
+	if replay.replays != 1 || replay.conflicts != 0 {
+		t.Fatalf("replay recorded %d replays and %d conflicts, want 1 and 0", replay.replays, replay.conflicts)
+	}
+
+	conflict := &idempotencyRecorder{}
+	if _, err := newService(&fakeRepository{existing: &original}, WithObserver(conflict)).
+		Create(context.Background(), CreateInput{
+			ProductID: "product_demo", Quantity: 2, IdempotencyKey: "key-1",
+		}); !errors.Is(err, ErrIdempotencyKeyConflict) {
+		t.Fatalf("Create() conflict error = %v, want %v", err, ErrIdempotencyKeyConflict)
+	}
+	if conflict.conflicts != 1 || conflict.replays != 0 {
+		t.Fatalf("conflict recorded %d conflicts and %d replays, want 1 and 0", conflict.conflicts, conflict.replays)
+	}
+}
+
+// A first-time creation is neither a replay nor a conflict.
+func TestObserverIsSilentOnAFreshOrder(t *testing.T) {
+	t.Parallel()
+
+	recorder := &idempotencyRecorder{}
+	if _, err := newService(&fakeRepository{}, WithObserver(recorder)).
+		Create(context.Background(), CreateInput{
+			ProductID: "product_demo", Quantity: 1, IdempotencyKey: "key-1",
+		}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if recorder.replays != 0 || recorder.conflicts != 0 {
+		t.Fatalf("fresh order recorded %d replays and %d conflicts, want none", recorder.replays, recorder.conflicts)
+	}
+}

@@ -22,11 +22,22 @@ internal/application/   casos de uso e portas exigidas por eles
 internal/adapters/      PostgreSQL, RabbitMQ, catalogo e provedores externos
 internal/transport/     entradas HTTP e traducao de protocolos
 internal/platform/      configuracao, banco, logs, lifecycle e telemetria
+internal/runtime/       composicao executavel de cada processo
 ```
 
 `internal/domain` nao importa HTTP, GORM, PostgreSQL, RabbitMQ, Stripe ou
 OpenTelemetry. `internal/application` define as interfaces que os adapters
-implementam. `cmd` somente carrega configuracao e compoe dependencias.
+implementam.
+
+A composicao de cada processo vive em `internal/runtime/api` e
+`internal/runtime/worker`, e nao no `cmd` correspondente. Um pacote `main` nao e
+importavel, entao um teste de fluxo completo nao teria como subir a mesma
+montagem que o binario sobe. Cada pacote expoe `Run` recebendo contexto,
+configuracao e um `Options` de campos opcionais, tipados pelas portas que a
+propria aplicacao ja define. `cmd` fica com o que e responsabilidade de
+processo: carregar configuracao, transformar sinal em contexto cancelado e
+mapear falha em codigo de saida. Ver
+[ADR 0014](decisions/0014-testable-composition-and-e2e-boundaries.md).
 
 Codigo gerado fica proximo do adapter que o consome e nunca e editado
 manualmente:
