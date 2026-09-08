@@ -478,7 +478,10 @@ func (f *fakePaymentProvider) CreateCheckout(_ context.Context, request paymenta
 	f.sequence++
 	session := paymentdomain.Session{
 		ID: fmt.Sprintf("cs_e2e_%d", f.sequence), PaymentIntentID: fmt.Sprintf("pi_e2e_%d", f.sequence),
-		URL: fmt.Sprintf("https://checkout.stripe.test/e2e/%d", f.sequence), ExpiresAt: time.Now().Add(time.Hour).UTC(),
+		URL: fmt.Sprintf("https://checkout.stripe.test/e2e/%d", f.sequence),
+		// Stripe exposes session expiry as Unix seconds. Matching that precision
+		// also makes the first response identical to a replay loaded from Postgres.
+		ExpiresAt: time.Now().UTC().Add(time.Hour).Truncate(time.Second),
 	}
 	f.sessions = append(f.sessions, session)
 	return session, nil
