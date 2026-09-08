@@ -104,7 +104,8 @@ func TestWorkerBinaryConfigurationAndSignalShutdown(t *testing.T) {
 	}()
 
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d/health", port)
-	client := &http.Client{Timeout: 500 * time.Millisecond}
+	client := newE2EHTTPClient(500 * time.Millisecond)
+	defer client.CloseIdleConnections()
 	h.poll("black-box worker readiness", func() (bool, string, error) {
 		request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, nil)
 		response, err := client.Do(request)
