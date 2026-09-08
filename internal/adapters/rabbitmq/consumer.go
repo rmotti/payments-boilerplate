@@ -57,6 +57,7 @@ type Consumer struct {
 	handler    Handler
 	observer   ConsumerObserver
 	config     ConsumerConfig
+	testHooks  TestHooks
 }
 
 // NewConsumer wires a consumer to its broker connections.
@@ -77,6 +78,13 @@ func NewConsumer(connection, publisher *Connection, handler Handler, config Cons
 // WithObserver reports republications and rejections.
 func (c *Consumer) WithObserver(observer ConsumerObserver) *Consumer {
 	c.observer = observer
+	return c
+}
+
+// WithTestHooks installs deterministic protocol-boundary hooks. Production
+// composition never calls this method.
+func (c *Consumer) WithTestHooks(hooks TestHooks) *Consumer {
+	c.testHooks = hooks
 	return c
 }
 
@@ -317,6 +325,16 @@ func (c *Consumer) republishToDeadLetter(
 // channel, but it keeps a failed publication from taking the consuming channel
 // down with it, and republications are the exception rather than the rule.
 func (c *Consumer) republish(ctx context.Context, exchange string, delivery amqp.Delivery) error {
+	if c.testHooks.Republish != nil {
+		if err := c.testHooks.Republish(ctx, exchange, delivery); err != nil {
+			return err
+		}
+		if c.testHooks.AfterRepublishConfirmed != nil {
+			return c.testHooks.AfterRepublishConfirmed(exchange, delivery)
+		}
+		return nil
+	}
+
 	publishCtx, cancel := context.WithTimeout(ctx, republishTimeout)
 	defer cancel()
 
@@ -363,11 +381,21 @@ func (c *Consumer) republish(ctx context.Context, exchange string, delivery amqp
 				returned.RoutingKey, returned.ReplyCode, returned.ReplyText)
 		default:
 		}
+		if c.testHooks.AfterRepublishConfirmed != nil {
+			if err := c.testHooks.AfterRepublishConfirmed(exchange, delivery); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 }
 
 func (c *Consumer) ack(delivery amqp.Delivery) error {
+	if c.testHooks.BeforeAck != nil {
+		if err := c.testHooks.BeforeAck(delivery); err != nil {
+			return err
+		}
+	}
 	// multiple is false: each message is settled on its own, because workers
 	// finish out of order and a cumulative ack would settle messages that are
 	// still being applied.

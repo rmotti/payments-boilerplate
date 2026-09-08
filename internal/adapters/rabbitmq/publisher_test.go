@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -288,6 +289,63 @@ func TestPublishTimeoutMatchesTheConfiguredBudget(t *testing.T) {
 		t.Fatalf("PublishTimeout = %s but config.PublishAttemptBudget = %s; "+
 			"the lease sizing check would no longer protect the lease",
 			PublishTimeout, config.PublishAttemptBudget)
+	}
+}
+
+func TestPublisherTestHookInjectsConfirmOutcomes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		want error
+	}{
+		{name: "broker nack", want: app.ErrNotConfirmed},
+		{name: "mandatory return", want: app.ErrNotRouted},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			publisher := NewPublisher(nil).WithTestHooks(TestHooks{
+				Publish: func(context.Context, domain.Message) error { return test.want },
+				AfterPublishConfirmed: func(domain.Message) error {
+					t.Fatal("post-confirm hook ran for an unconfirmed publication")
+					return nil
+				},
+			})
+			err := publisher.Publish(context.Background(), testMessage(domain.KindCheckoutCompleted))
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Publish() error = %v, want %v", err, test.want)
+			}
+			if app.IsPermanent(err) {
+				t.Fatalf("Publish() error = %v, want retryable broker outcome", err)
+			}
+		})
+	}
+}
+
+func TestPublisherTestHookTargetsThePostConfirmWindow(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("relay stopped after broker confirm")
+	var published, confirmed atomic.Int32
+	publisher := NewPublisher(nil).WithTestHooks(TestHooks{
+		Publish: func(context.Context, domain.Message) error {
+			published.Add(1)
+			return nil
+		},
+		AfterPublishConfirmed: func(domain.Message) error {
+			confirmed.Add(1)
+			return wantErr
+		},
+	})
+
+	err := publisher.Publish(context.Background(), testMessage(domain.KindCheckoutCompleted))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Publish() error = %v, want %v", err, wantErr)
+	}
+	if published.Load() != 1 || confirmed.Load() != 1 {
+		t.Fatalf("publish/confirm callbacks = %d/%d, want 1/1", published.Load(), confirmed.Load())
 	}
 }
 

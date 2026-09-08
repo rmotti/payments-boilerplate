@@ -138,6 +138,45 @@ func TestHandleTreatsAProcessedEventAsDone(t *testing.T) {
 	}
 }
 
+// Repository.Process owns the transaction and returns only after commit. A
+// process loss in the following window must surface as an error so the broker
+// adapter leaves the original delivery unacknowledged. Its redelivery then
+// observes the already-processed inbox row and becomes a no-op.
+func TestHandleLeavesCommitBeforeAckWindowSafeForRedelivery(t *testing.T) {
+	t.Parallel()
+
+	repository := &fakeRepository{aggregate: paidAggregate()}
+	var injected bool
+	service := NewService(repository, fakeInterpreter{outcome: succeededOutcome()}, Config{},
+		WithTestHooks(TestHooks{AfterCommit: func(_ string, result Result) error {
+			if !result.Applied {
+				t.Fatal("hook ran before the committed effect was reported")
+			}
+			injected = true
+			return errors.New("worker stopped before ack")
+		}}))
+
+	if _, err := service.Handle(context.Background(), "evt_1"); err == nil {
+		t.Fatal("Handle() error = nil, want the delivery left unacknowledged")
+	}
+	if !injected || repository.gotEffect.PaymentStatus != payments.StatusSucceeded {
+		t.Fatal("fault did not occur after the committed effect")
+	}
+
+	// Model what the real repository returns after the committed delivery is
+	// redelivered: no payload interpretation and no second state transition.
+	repository.alreadyProcessed = true
+	service = NewService(repository,
+		fakeInterpreter{err: errors.New("redelivery must not be interpreted")}, Config{})
+	got, err := service.Handle(context.Background(), "evt_1")
+	if err != nil {
+		t.Fatalf("redelivery Handle() error = %v", err)
+	}
+	if got.Disposition != DispositionDone || got.Applied {
+		t.Fatalf("redelivery = %#v, want an acknowledged no-op", got)
+	}
+}
+
 // A stale event must be acknowledged, not retried: it is correct behaviour,
 // not a failure.
 func TestHandleAcknowledgesAStaleEvent(t *testing.T) {

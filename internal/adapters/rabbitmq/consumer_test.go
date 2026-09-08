@@ -20,6 +20,54 @@ func (f handlerFunc) Handle(ctx context.Context, eventID string) (app.Handling, 
 	return f(ctx, eventID)
 }
 
+type recordingAcknowledger struct {
+	mu       sync.Mutex
+	acks     int
+	nacks    int
+	rejects  int
+	onAction func(string)
+}
+
+func (a *recordingAcknowledger) Ack(uint64, bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.acks++
+	if a.onAction != nil {
+		a.onAction("ack")
+	}
+	return nil
+}
+
+func (a *recordingAcknowledger) Nack(uint64, bool, bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.nacks++
+	return nil
+}
+
+func (a *recordingAcknowledger) Reject(uint64, bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.rejects++
+	return nil
+}
+
+func (a *recordingAcknowledger) counts() (acks, nacks, rejects int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.acks, a.nacks, a.rejects
+}
+
+func testDelivery(acknowledger amqp.Acknowledger) amqp.Delivery {
+	return amqp.Delivery{
+		Acknowledger: acknowledger,
+		DeliveryTag:  1,
+		MessageId:    "msg_test",
+		RoutingKey:   "payment.webhook.checkout.completed",
+		Body:         []byte(`{"webhookEventId":"evt_test"}`),
+	}
+}
+
 // recordingObserver collects what the consumer did, for assertions.
 type recordingObserver struct {
 	mu           sync.Mutex
@@ -166,6 +214,116 @@ func startConsumer(t *testing.T, consumer *Consumer) {
 			t.Error("consumer did not stop within the shutdown budget")
 		}
 	})
+}
+
+func TestConsumerAcknowledgesOnlyAfterCommittedHandling(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	acknowledger := &recordingAcknowledger{onAction: func(action string) {
+		order = append(order, action)
+	}}
+	consumer := NewConsumer(nil, nil, handlerFunc(func(context.Context, string) (app.Handling, error) {
+		order = append(order, "commit")
+		return app.Handling{Disposition: app.DispositionDone, Applied: true}, nil
+	}), ConsumerConfig{})
+	consumer.WithTestHooks(TestHooks{BeforeAck: func(amqp.Delivery) error {
+		order = append(order, "before-ack")
+		return nil
+	}})
+
+	if err := consumer.handle(context.Background(), testDelivery(acknowledger)); err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+	if got := fmt.Sprint(order); got != "[commit before-ack ack]" {
+		t.Fatalf("order = %s, want commit before acknowledgement", got)
+	}
+}
+
+func TestConsumerConfirmsRetryCopyBeforeAcknowledgingOriginal(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	acknowledger := &recordingAcknowledger{onAction: func(action string) {
+		order = append(order, action)
+	}}
+	tier := RetryTier{Delay: time.Second}
+	consumer := NewConsumer(nil, nil, handlerFunc(func(context.Context, string) (app.Handling, error) {
+		return app.Handling{Disposition: app.DispositionRetry, Attempts: 1}, nil
+	}), ConsumerConfig{RetryTiers: []RetryTier{tier}})
+	consumer.WithTestHooks(TestHooks{
+		Republish: func(_ context.Context, exchange string, _ amqp.Delivery) error {
+			if exchange != tier.Exchange() {
+				t.Fatalf("exchange = %q, want %q", exchange, tier.Exchange())
+			}
+			order = append(order, "publish")
+			return nil
+		},
+		AfterRepublishConfirmed: func(string, amqp.Delivery) error {
+			order = append(order, "confirm")
+			return nil
+		},
+		BeforeAck: func(amqp.Delivery) error {
+			order = append(order, "before-ack")
+			return nil
+		},
+	})
+
+	if err := consumer.handle(context.Background(), testDelivery(acknowledger)); err != nil {
+		t.Fatalf("handle() error = %v", err)
+	}
+	if got := fmt.Sprint(order); got != "[publish confirm before-ack ack]" {
+		t.Fatalf("order = %s, want confirmed copy before acknowledgement", got)
+	}
+}
+
+func TestConsumerLeavesOriginalUnacknowledgedWhenRepublishFails(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("retry exchange unavailable")
+	acknowledger := &recordingAcknowledger{}
+	consumer := NewConsumer(nil, nil, handlerFunc(func(context.Context, string) (app.Handling, error) {
+		return app.Handling{Disposition: app.DispositionRetry, Attempts: 1}, nil
+	}), ConsumerConfig{RetryTiers: []RetryTier{{Delay: time.Second}}})
+	consumer.WithTestHooks(TestHooks{
+		Republish: func(context.Context, string, amqp.Delivery) error { return wantErr },
+	})
+
+	err := consumer.handle(context.Background(), testDelivery(acknowledger))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("handle() error = %v, want %v", err, wantErr)
+	}
+	if acks, nacks, rejects := acknowledger.counts(); acks != 0 || nacks != 0 || rejects != 0 {
+		t.Fatalf("settlements = ack %d/nack %d/reject %d, want original untouched",
+			acks, nacks, rejects)
+	}
+}
+
+func TestConsumerLeavesOriginalUnacknowledgedAfterConfirmedCopyIfAckWindowFails(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("worker stopped after republish confirm")
+	acknowledger := &recordingAcknowledger{}
+	consumer := NewConsumer(nil, nil, handlerFunc(func(context.Context, string) (app.Handling, error) {
+		return app.Handling{Disposition: app.DispositionDead, Attempts: 10}, nil
+	}), ConsumerConfig{})
+	consumer.WithTestHooks(TestHooks{
+		Republish: func(context.Context, string, amqp.Delivery) error { return nil },
+		AfterRepublishConfirmed: func(exchange string, _ amqp.Delivery) error {
+			if exchange != DeadLetterExchange {
+				t.Fatalf("exchange = %q, want dead-letter exchange", exchange)
+			}
+			return wantErr
+		},
+	})
+
+	err := consumer.handle(context.Background(), testDelivery(acknowledger))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("handle() error = %v, want %v", err, wantErr)
+	}
+	if acks, _, _ := acknowledger.counts(); acks != 0 {
+		t.Fatalf("acks = %d, want the confirmed copy to coexist with an unacknowledged original", acks)
+	}
 }
 
 func TestConsumerAcknowledgesAppliedMessages(t *testing.T) {

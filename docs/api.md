@@ -3,6 +3,11 @@
 Este documento delimita a superfície HTTP do MVP. A especificação OpenAPI é a
 fonte executável do contrato e gera o strict server usado pela aplicação.
 
+Somente blocos JSON com o marcador `contract` são exemplos contratuais. Cada
+marcador informa `operation`, `direction` e `status`, e a suíte valida o bloco
+contra esse ponto exato de `api/openapi.yaml`. Blocos sem o marcador são apenas
+ilustrativos e não são interpretados pelo verificador.
+
 ## Convenções
 
 - Prefixo de versão: `/v1`.
@@ -14,7 +19,7 @@ fonte executável do contrato e gera o strict server usado pela aplicação.
 - Erros: estrutura consistente com código, mensagem e identificador de
   correlação.
 
-```json
+```json contract operation=createOrder direction=response status=400 name=common-error
 {
   "code": "invalid_request",
   "message": "quantity must be between 1 and 1000",
@@ -80,7 +85,7 @@ Headers:
 
 Requisição:
 
-```json
+```json contract operation=createOrder direction=request status=- name=create-order-request
 {
   "productId": "product_demo",
   "quantity": 1
@@ -92,7 +97,7 @@ deve estar entre 1 e 1000.
 
 Resposta `201 Created`:
 
-```json
+```json contract operation=createOrder direction=response status=201 name=create-order-response
 {
   "id": "ord_3f2504e04f8911d39a0c0305e82c3301",
   "status": "pending",
@@ -138,7 +143,7 @@ depois que o ID da sessão, a URL e sua expiração estão ligados ao
 
 Resposta `201 Created`:
 
-```json
+```json contract operation=createCheckout direction=response status=201 name=create-checkout-response
 {
   "checkoutUrl": "https://checkout.stripe.com/c/pay/...",
   "expiresAt": "2026-09-05T18:00:00Z"
@@ -159,7 +164,7 @@ Requer `X-API-Key` e devolve `404 order_not_found` quando o identificador é
 malformado ou não corresponde a um pedido desta instalação. A resposta não
 distingue esses casos.
 
-```json
+```json contract operation=getOrder direction=response status=200 name=get-order-response
 {
   "id": "ord_0123456789abcdef0123456789abcdef",
   "status": "pending",

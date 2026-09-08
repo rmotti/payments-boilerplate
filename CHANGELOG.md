@@ -122,9 +122,22 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Procedimento operacional de expurgo com o SQL correspondente. A `0.1.0` não
   terá expurgo automatizado, e a ausência de automação passa a ser decisão
   registrada em vez de retenção indefinida silenciosa.
+- Verificação executável do contrato OpenAPI contra exchanges HTTP reais, com
+  validação de request, status, headers, media type, corpo, exemplos e um
+  manifesto exato para todos os pares operação/status documentados.
+- Harness E2E serial e isolado cobrindo autenticação, preço confiável,
+  idempotência, checkout, recepção atômica e deduplicada de webhooks, cartão,
+  Pix, eventos fora de ordem, DLQ, redelivery, concorrência e reprocessamento.
+- Hooks de teste para as janelas entre publish/confirm/settlement/commit/ack e
+  proxy TCP para indisponibilidade, blackhole e recuperação de PostgreSQL e
+  RabbitMQ, com matriz prolongada de backlog e percentis de drenagem.
+- Jobs dedicados para contrato, E2E e chaos determinístico; chaos prolongado
+  roda por agendamento ou manualmente e bloqueia releases no mesmo SHA da tag.
 
 ### Changed
 
+- `X-Correlation-ID` passa a fazer parte obrigatória das 33 respostas do
+  OpenAPI, com código gerado e handlers alinhados ao contrato.
 - Canal privado de relato de vulnerabilidades habilitado no repositório. O
   `SECURITY.md` deixa de instruir a abertura de issue pública provisória e
   aponta para o formulário privado do GitHub.

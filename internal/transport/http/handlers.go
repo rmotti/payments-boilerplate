@@ -89,10 +89,14 @@ func (h *APIHandler) GetHealth(
 	}
 	if !result.Ready {
 		response.Status = openapi.Unavailable
-		return openapi.GetHealth503JSONResponse(response), nil
+		return openapi.GetHealth503JSONResponse{
+			Body: response, Headers: openapi.GetHealth503ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	}
 
-	return openapi.GetHealth200JSONResponse(response), nil
+	return openapi.GetHealth200JSONResponse{
+		Body: response, Headers: openapi.GetHealth200ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+	}, nil
 }
 
 // CreateOrder prices and persists a pending order. The request never carries
@@ -105,7 +109,10 @@ func (h *APIHandler) CreateOrder(
 		return nil, ErrNotServed
 	}
 	if request.Body == nil {
-		return openapi.CreateOrder400JSONResponse(newError(ctx, codeInvalidRequest, "request body is required")), nil
+		return openapi.CreateOrder400JSONResponse{
+			Body:    newError(ctx, codeInvalidRequest, "request body is required"),
+			Headers: openapi.CreateOrder400ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	}
 
 	order, err := h.orders.Create(ctx, orderapp.CreateInput{
@@ -117,7 +124,10 @@ func (h *APIHandler) CreateOrder(
 		return createOrderError(ctx, err)
 	}
 
-	return openapi.CreateOrder201JSONResponse(orderResponse(order)), nil
+	return openapi.CreateOrder201JSONResponse{
+		Body:    orderResponse(order),
+		Headers: openapi.CreateOrder201ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+	}, nil
 }
 
 func createOrderError(ctx context.Context, err error) (openapi.CreateOrderResponseObject, error) {
@@ -125,11 +135,20 @@ func createOrderError(ctx context.Context, err error) (openapi.CreateOrderRespon
 	case errors.Is(err, orderdomain.ErrInvalidProductID),
 		errors.Is(err, orderdomain.ErrInvalidQuantity),
 		errors.Is(err, orderdomain.ErrInvalidIdempotencyKey):
-		return openapi.CreateOrder400JSONResponse(newError(ctx, codeInvalidRequest, err.Error())), nil
+		return openapi.CreateOrder400JSONResponse{
+			Body:    newError(ctx, codeInvalidRequest, err.Error()),
+			Headers: openapi.CreateOrder400ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	case errors.Is(err, orderapp.ErrProductNotFound):
-		return openapi.CreateOrder404JSONResponse(newError(ctx, codeProductNotFound, orderapp.ErrProductNotFound.Error())), nil
+		return openapi.CreateOrder404JSONResponse{
+			Body:    newError(ctx, codeProductNotFound, orderapp.ErrProductNotFound.Error()),
+			Headers: openapi.CreateOrder404ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	case errors.Is(err, orderapp.ErrIdempotencyKeyConflict):
-		return openapi.CreateOrder409JSONResponse(newError(ctx, codeIdempotencyKeyConflict, orderapp.ErrIdempotencyKeyConflict.Error())), nil
+		return openapi.CreateOrder409JSONResponse{
+			Body:    newError(ctx, codeIdempotencyKeyConflict, orderapp.ErrIdempotencyKeyConflict.Error()),
+			Headers: openapi.CreateOrder409ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	default:
 		// Anything else is unexpected. Hand it to the server so it is logged
 		// with the correlation id and answered as a generic 500.
@@ -157,11 +176,17 @@ func (h *APIHandler) GetOrder(
 	order, err := h.orders.Get(ctx, string(request.OrderId))
 	if err != nil {
 		if errors.Is(err, orderapp.ErrOrderNotFound) {
-			return openapi.GetOrder404JSONResponse(newError(ctx, codeOrderNotFound, orderapp.ErrOrderNotFound.Error())), nil
+			return openapi.GetOrder404JSONResponse{
+				Body:    newError(ctx, codeOrderNotFound, orderapp.ErrOrderNotFound.Error()),
+				Headers: openapi.GetOrder404ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+			}, nil
 		}
 		return nil, fmt.Errorf("get order: %w", err)
 	}
-	return openapi.GetOrder200JSONResponse(orderResponse(order)), nil
+	return openapi.GetOrder200JSONResponse{
+		Body:    orderResponse(order),
+		Headers: openapi.GetOrder200ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+	}, nil
 }
 
 // CreateCheckout opens or recovers an idempotent Stripe hosted session.
@@ -179,24 +204,43 @@ func (h *APIHandler) CreateCheckout(
 		return createCheckoutError(ctx, err)
 	}
 	return openapi.CreateCheckout201JSONResponse{
-		CheckoutUrl: checkout.URL, ExpiresAt: checkout.ExpiresAt,
+		Body:    openapi.Checkout{CheckoutUrl: checkout.URL, ExpiresAt: checkout.ExpiresAt},
+		Headers: openapi.CreateCheckout201ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
 	}, nil
 }
 
 func createCheckoutError(ctx context.Context, err error) (openapi.CreateCheckoutResponseObject, error) {
 	switch {
 	case errors.Is(err, orderdomain.ErrInvalidIdempotencyKey):
-		return openapi.CreateCheckout400JSONResponse(newError(ctx, codeInvalidRequest, err.Error())), nil
+		return openapi.CreateCheckout400JSONResponse{
+			Body:    newError(ctx, codeInvalidRequest, err.Error()),
+			Headers: openapi.CreateCheckout400ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	case errors.Is(err, orderapp.ErrOrderNotFound):
-		return openapi.CreateCheckout404JSONResponse(newError(ctx, codeOrderNotFound, orderapp.ErrOrderNotFound.Error())), nil
+		return openapi.CreateCheckout404JSONResponse{
+			Body:    newError(ctx, codeOrderNotFound, orderapp.ErrOrderNotFound.Error()),
+			Headers: openapi.CreateCheckout404ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	case errors.Is(err, paymentapp.ErrIdempotencyKeyConflict):
-		return openapi.CreateCheckout409JSONResponse(newError(ctx, codeIdempotencyKeyConflict, paymentapp.ErrIdempotencyKeyConflict.Error())), nil
+		return openapi.CreateCheckout409JSONResponse{
+			Body:    newError(ctx, codeIdempotencyKeyConflict, paymentapp.ErrIdempotencyKeyConflict.Error()),
+			Headers: openapi.CreateCheckout409ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	case errors.Is(err, paymentapp.ErrCheckoutInProgress):
-		return openapi.CreateCheckout409JSONResponse(newError(ctx, codeCheckoutInProgress, paymentapp.ErrCheckoutInProgress.Error())), nil
+		return openapi.CreateCheckout409JSONResponse{
+			Body:    newError(ctx, codeCheckoutInProgress, paymentapp.ErrCheckoutInProgress.Error()),
+			Headers: openapi.CreateCheckout409ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	case errors.Is(err, paymentapp.ErrOrderNotPayable):
-		return openapi.CreateCheckout409JSONResponse(newError(ctx, codeOrderNotPayable, paymentapp.ErrOrderNotPayable.Error())), nil
+		return openapi.CreateCheckout409JSONResponse{
+			Body:    newError(ctx, codeOrderNotPayable, paymentapp.ErrOrderNotPayable.Error()),
+			Headers: openapi.CreateCheckout409ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	case errors.Is(err, paymentapp.ErrProviderUnavailable):
-		return openapi.CreateCheckout502JSONResponse(newError(ctx, codeProviderUnavailable, paymentapp.ErrProviderUnavailable.Error())), nil
+		return openapi.CreateCheckout502JSONResponse{
+			Body:    newError(ctx, codeProviderUnavailable, paymentapp.ErrProviderUnavailable.Error()),
+			Headers: openapi.CreateCheckout502ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	default:
 		return nil, fmt.Errorf("create checkout: %w", err)
 	}
@@ -221,7 +265,10 @@ func (h *APIHandler) ListWebhookEvents(
 	events, err := h.operations.List(ctx, status, limit)
 	if err != nil {
 		if errors.Is(err, webhookapp.ErrInvalidStatus) || errors.Is(err, webhookapp.ErrInvalidLimit) {
-			return openapi.ListWebhookEvents400JSONResponse(newError(ctx, codeInvalidRequest, err.Error())), nil
+			return openapi.ListWebhookEvents400JSONResponse{
+				Body:    newError(ctx, codeInvalidRequest, err.Error()),
+				Headers: openapi.ListWebhookEvents400ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+			}, nil
 		}
 		return nil, fmt.Errorf("list webhook events: %w", err)
 	}
@@ -229,7 +276,10 @@ func (h *APIHandler) ListWebhookEvents(
 	for _, event := range events {
 		items = append(items, webhookEventResponse(event))
 	}
-	return openapi.ListWebhookEvents200JSONResponse{Items: items}, nil
+	return openapi.ListWebhookEvents200JSONResponse{
+		Body:    openapi.WebhookEventList{Items: items},
+		Headers: openapi.ListWebhookEvents200ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+	}, nil
 }
 
 // ReprocessWebhookEvent atomically returns failed work to the outbox relay.
@@ -244,16 +294,23 @@ func (h *APIHandler) ReprocessWebhookEvent(
 	if err != nil {
 		switch {
 		case errors.Is(err, webhookapp.ErrEventNotFound):
-			return openapi.ReprocessWebhookEvent404JSONResponse(
-				newError(ctx, codeWebhookEventNotFound, webhookapp.ErrEventNotFound.Error())), nil
+			return openapi.ReprocessWebhookEvent404JSONResponse{
+				Body:    newError(ctx, codeWebhookEventNotFound, webhookapp.ErrEventNotFound.Error()),
+				Headers: openapi.ReprocessWebhookEvent404ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+			}, nil
 		case errors.Is(err, webhookapp.ErrEventNotReplayable):
-			return openapi.ReprocessWebhookEvent409JSONResponse(
-				newError(ctx, codeWebhookEventNotReplayable, webhookapp.ErrEventNotReplayable.Error())), nil
+			return openapi.ReprocessWebhookEvent409JSONResponse{
+				Body:    newError(ctx, codeWebhookEventNotReplayable, webhookapp.ErrEventNotReplayable.Error()),
+				Headers: openapi.ReprocessWebhookEvent409ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+			}, nil
 		default:
 			return nil, fmt.Errorf("reprocess webhook event: %w", err)
 		}
 	}
-	return openapi.ReprocessWebhookEvent202JSONResponse(webhookEventResponse(event)), nil
+	return openapi.ReprocessWebhookEvent202JSONResponse{
+		Body:    webhookEventResponse(event),
+		Headers: openapi.ReprocessWebhookEvent202ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+	}, nil
 }
 
 func webhookEventResponse(event webhookapp.EventInspection) openapi.WebhookEventInspection {
@@ -320,9 +377,10 @@ func (h *APIHandler) ReceiveStripeWebhook(
 			// Stripe will still redeliver, and every attempt will fail the same
 			// way until the endpoint secret is fixed; the invalid-signature
 			// metric is what turns that into an alert.
-			return openapi.ReceiveStripeWebhook400JSONResponse(
-				newError(ctx, codeInvalidSignature, webhookapp.ErrInvalidSignature.Error()),
-			), nil
+			return openapi.ReceiveStripeWebhook400JSONResponse{
+				Body:    newError(ctx, codeInvalidSignature, webhookapp.ErrInvalidSignature.Error()),
+				Headers: openapi.ReceiveStripeWebhook400ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+			}, nil
 		}
 		// Storage failed. Answering 500 is deliberate: the provider is the only
 		// thing that can deliver this event again.
@@ -330,10 +388,14 @@ func (h *APIHandler) ReceiveStripeWebhook(
 	}
 
 	if outcome == webhookapp.OutcomeAccepted {
-		return openapi.ReceiveStripeWebhook202Response{}, nil
+		return openapi.ReceiveStripeWebhook202Response{
+			Headers: openapi.ReceiveStripeWebhook202ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+		}, nil
 	}
 	// Duplicate or ignored: nothing was queued, and nothing should be retried.
-	return openapi.ReceiveStripeWebhook200Response{}, nil
+	return openapi.ReceiveStripeWebhook200Response{
+		Headers: openapi.ReceiveStripeWebhook200ResponseHeaders{XCorrelationID: correlationIDFromContext(ctx)},
+	}, nil
 }
 
 // readWebhookBody reads the request bytes exactly as they arrived. They must

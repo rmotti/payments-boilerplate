@@ -2,7 +2,7 @@
 
 GO ?= go
 
-.PHONY: help setup format generate lint vet vuln test test-race build check
+.PHONY: help setup format generate lint vet vuln test test-race test-contract test-e2e test-chaos test-chaos-long build check
 .PHONY: infra-up infra-down observability-up app-up migrate-up migrate-down run-api run-worker
 
 help:
@@ -34,6 +34,18 @@ test: ## Executa testes unitarios.
 test-race: ## Executa testes com detector de race.
 	$(GO) test -race ./...
 
+test-contract: ## Valida handlers, exemplos e manifesto contra o OpenAPI.
+	$(GO) test -count=1 ./internal/contracttest ./internal/transport/http
+
+test-e2e: ## Executa fluxos ponta a ponta (requer ambiente E2E isolado).
+	$(GO) test -race -tags=e2e -count=1 -timeout=5m ./tests/e2e
+
+test-chaos: ## Executa falhas deterministicas e o proxy de rede.
+	$(GO) test -race -count=1 ./tests/chaos ./internal/application/outbox ./internal/application/consumer ./internal/adapters/rabbitmq
+
+test-chaos-long: ## Executa recuperacao e backlog com dependencias reais isoladas.
+	$(GO) test -tags=chaos -count=1 -timeout=10m -v ./tests/chaos
+
 build: ## Compila todos os comandos.
 	$(GO) build ./cmd/...
 
@@ -63,4 +75,3 @@ run-api: ## Executa a API localmente.
 
 run-worker: ## Executa o worker localmente.
 	HTTP_ADDRESS=:8081 OTEL_SERVICE_NAME=payments-worker $(GO) run ./cmd/worker
-

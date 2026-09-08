@@ -36,7 +36,7 @@ func TestGetHealthReady(t *testing.T) {
 	if !ok {
 		t.Fatalf("GetHealth() response type = %T, want 200 response", response)
 	}
-	if ready.Status != openapi.Ok || ready.Checks["postgres"] != openapi.Up {
+	if ready.Body.Status != openapi.Ok || ready.Body.Checks["postgres"] != openapi.Up {
 		t.Fatalf("GetHealth() response = %#v, want ready", ready)
 	}
 }
@@ -56,7 +56,7 @@ func TestGetHealthUnavailable(t *testing.T) {
 	if !ok {
 		t.Fatalf("GetHealth() response type = %T, want 503 response", response)
 	}
-	if unavailable.Status != openapi.Unavailable || unavailable.Checks["rabbitmq"] != openapi.Down {
+	if unavailable.Body.Status != openapi.Unavailable || unavailable.Body.Checks["rabbitmq"] != openapi.Down {
 		t.Fatalf("GetHealth() response = %#v, want unavailable", unavailable)
 	}
 }

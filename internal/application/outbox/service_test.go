@@ -206,6 +206,31 @@ func TestTransientFailuresNeverAbandonAMessage(t *testing.T) {
 	}
 }
 
+func TestBrokerNackAndMandatoryReturnKeepMessageEligible(t *testing.T) {
+	t.Parallel()
+
+	for _, brokerErr := range []error{ErrNotConfirmed, ErrNotRouted} {
+		brokerErr := brokerErr
+		t.Run(brokerErr.Error(), func(t *testing.T) {
+			t.Parallel()
+			repository := &stubRepository{batches: [][]Lease{{lease("msg_retry", 0)}}}
+			service := newService(repository, &stubPublisher{err: brokerErr}, Config{})
+
+			result, err := service.RunOnce(context.Background())
+			if err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			if result.Retrying != 1 || len(repository.retries) != 1 {
+				t.Fatalf("result/retries = %#v/%v, want the row eligible for retry",
+					result, repository.retries)
+			}
+			if len(repository.published) != 0 || len(repository.failed) != 0 {
+				t.Fatalf("published/failed = %v/%v, want neither", repository.published, repository.failed)
+			}
+		})
+	}
+}
+
 // Only an explicitly permanent error stops the retries.
 func TestPermanentFailureAbandonsMessage(t *testing.T) {
 	t.Parallel()
@@ -473,6 +498,49 @@ func TestStorageFailureDuringSettlementSurfaces(t *testing.T) {
 
 	if _, err := service.RunOnce(context.Background()); err == nil {
 		t.Fatal("RunOnce() error = nil, want a storage failure to surface")
+	}
+}
+
+// A broker confirm and PostgreSQL settlement are necessarily separate. If the
+// relay stops in that gap, the lease remains eligible and the next relay may
+// publish the same message again. The durable consumer is responsible for
+// making that duplicate harmless.
+func TestConfirmedMessageIsRepublishedAfterFailureBeforeSettlement(t *testing.T) {
+	t.Parallel()
+
+	repository := &stubRepository{batches: [][]Lease{
+		{lease("msg_1", 0)},
+		{lease("msg_1", 1)},
+	}}
+	publisher := &stubPublisher{}
+	var injections atomic.Int32
+	service := newService(repository, publisher, Config{}, WithTestHooks(TestHooks{
+		BeforeSettlement: func(domain.Message) error {
+			if injections.Add(1) == 1 {
+				return errors.New("relay stopped after confirm")
+			}
+			return nil
+		},
+	}))
+
+	if _, err := service.RunOnce(context.Background()); err == nil {
+		t.Fatal("first RunOnce() error = nil, want the confirm/settlement failure")
+	}
+	if len(repository.published) != 0 || len(repository.retries) != 0 {
+		t.Fatalf("outcomes after injected stop = published %v, retries %v; want the lease untouched",
+			repository.published, repository.retries)
+	}
+
+	result, err := service.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second RunOnce() error = %v", err)
+	}
+	if publisher.calls.Load() != 2 {
+		t.Fatalf("publish calls = %d, want the intentional republication", publisher.calls.Load())
+	}
+	if result.Published != 1 || len(repository.published) != 1 {
+		t.Fatalf("result/repository = %#v/%v, want exactly one durable settlement",
+			result, repository.published)
 	}
 }
 

@@ -17,12 +17,16 @@ paths:
       responses:
         "200":
           description: Processo pronto para receber trabalho.
+          headers: &correlationResponseHeaders
+            X-Correlation-ID:
+              $ref: "#/components/headers/CorrelationId"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
         "503":
           description: Uma dependencia obrigatoria esta indisponivel.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -53,6 +57,7 @@ paths:
       responses:
         "201":
           description: Pedido criado com valor calculado no servidor.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -66,6 +71,7 @@ paths:
                     currency: BRL
         "400":
           description: Corpo, header ou campos da requisicao invalidos.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -78,6 +84,7 @@ paths:
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
         "401":
           description: Chave de integracao ausente ou invalida.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -90,6 +97,7 @@ paths:
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
         "404":
           description: O produto informado nao existe no catalogo.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -102,6 +110,7 @@ paths:
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
         "409":
           description: A Idempotency-Key ja foi usada por outro pedido.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -114,6 +123,7 @@ paths:
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
         "413":
           description: O corpo da requisicao excede o limite aceito pela API.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -126,6 +136,7 @@ paths:
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
         "500":
           description: Falha inesperada ao criar o pedido.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -146,24 +157,28 @@ paths:
       responses:
         "200":
           description: Pedido encontrado.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Order"
         "401":
           description: Chave de integracao ausente ou invalida.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
           description: Pedido nao encontrado.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
           description: Falha inesperada ao consultar o pedido.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -183,42 +198,49 @@ paths:
       responses:
         "201":
           description: Sessao de Checkout pronta para redirecionamento.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Checkout"
         "400":
           description: Header de idempotencia ausente ou invalido.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
           description: Chave de integracao ausente ou invalida.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
           description: Pedido nao encontrado.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Chave reutilizada em outro pedido, pedido nao pagavel ou outro checkout ativo.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "502":
           description: O provedor de pagamentos nao respondeu com uma sessao valida.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
           description: Falha inesperada ao iniciar o checkout.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -248,24 +270,28 @@ paths:
       responses:
         "200":
           description: Eventos mais recentes, com filtro opcional de status.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookEventList"
         "400":
           description: Filtro ou limite invalido.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
           description: Chave de integracao ausente ou invalida.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
           description: Falha inesperada ao consultar os eventos.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -285,30 +311,35 @@ paths:
       responses:
         "202":
           description: Evento devolvido ao relay do outbox.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookEventInspection"
         "401":
           description: Chave de integracao ausente ou invalida.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
           description: Evento nao encontrado.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Evento e publicacao nao estao em estado failed.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
           description: Falha inesperada ao reenfileirar o evento.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -368,12 +399,15 @@ paths:
           description: |
             Evento novo aceito de forma duravel e enfileirado para
             processamento assincrono.
+          headers: *correlationResponseHeaders
         "200":
           description: |
             Nada a fazer: o evento ja havia sido recebido antes, ou e de um
             tipo que a aplicacao nao trata e foi apenas registrado.
+          headers: *correlationResponseHeaders
         "400":
           description: Assinatura ausente, invalida ou fora da janela de tempo.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -389,6 +423,7 @@ paths:
             O evento nao pode ser registrado. Devolvido tambem quando o corpo
             excede o limite do endpoint, porque nesse caso uma reentrega passa
             a funcionar depois que o limite for corrigido.
+          headers: *correlationResponseHeaders
           content:
             application/json:
               schema:
@@ -400,6 +435,14 @@ paths:
                     message: internal error
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
 components:
+  headers:
+    CorrelationId:
+      description: Identificador opaco que correlaciona a resposta aos logs da requisicao.
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
   securitySchemes:
     integrationApiKey:
       type: apiKey

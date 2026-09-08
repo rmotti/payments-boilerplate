@@ -34,6 +34,7 @@ type messageBody struct {
 // Publisher publishes outbox messages and waits for publisher confirms.
 type Publisher struct {
 	connection *Connection
+	testHooks  TestHooks
 
 	// mu serializes access to the channel. An AMQP channel is not safe for
 	// concurrent use, and confirms are matched to publishes by sequence.
@@ -49,6 +50,13 @@ type Publisher struct {
 // broker that is down right now never stops the worker from starting.
 func NewPublisher(connection *Connection) *Publisher {
 	return &Publisher{connection: connection}
+}
+
+// WithTestHooks installs deterministic protocol-boundary hooks. Production
+// composition never calls this method.
+func (p *Publisher) WithTestHooks(hooks TestHooks) *Publisher {
+	p.testHooks = hooks
+	return p
 }
 
 // Warm establishes the channel and topology ahead of the first publish, so a
@@ -107,6 +115,16 @@ func (p *Publisher) ensureChannel(ctx context.Context) (*amqp.Channel, error) {
 // from a lost one, and republishing a message the broker did receive is
 // harmless, while dropping one is not.
 func (p *Publisher) Publish(ctx context.Context, message domain.Message) error {
+	if p.testHooks.Publish != nil {
+		if err := p.testHooks.Publish(ctx, message); err != nil {
+			return err
+		}
+		if p.testHooks.AfterPublishConfirmed != nil {
+			return p.testHooks.AfterPublishConfirmed(message)
+		}
+		return nil
+	}
+
 	body, err := json.Marshal(messageBody{
 		MessageID:      message.ID,
 		Type:           string(message.Kind),
@@ -170,6 +188,11 @@ func (p *Publisher) Publish(ctx context.Context, message domain.Message) error {
 		if returned, ok := p.takeReturn(); ok {
 			return fmt.Errorf("%w: %s (%d %s)", app.ErrNotRouted,
 				returned.RoutingKey, returned.ReplyCode, returned.ReplyText)
+		}
+		if p.testHooks.AfterPublishConfirmed != nil {
+			if err := p.testHooks.AfterPublishConfirmed(message); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
