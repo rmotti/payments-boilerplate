@@ -16,6 +16,13 @@ nem um sistema que captura ou armazena dados completos de cartão.
 > produção. O uso deste código não garante conformidade com PCI DSS, LGPD ou
 > qualquer outra obrigação regulatória.
 
+> [!WARNING]
+> A aplicação **armazena dados pessoais**. Cada evento da Stripe é gravado na
+> tabela `webhook_events`, e um evento de Checkout carrega nome, e-mail,
+> telefone e endereços do cliente. Não armazenar dado completo de cartão não
+> torna o restante do payload inofensivo. O inventário, os prazos de retenção e
+> o procedimento de expurgo estão em [docs/security.md](docs/security.md).
+
 ## Estado atual e roadmap
 
 Este quadro é apenas um resumo. O checklist completo e sua ordem de execução
@@ -260,6 +267,8 @@ o Swagger UI representa no diagrama.
 5. Valores monetários são inteiros na menor unidade da moeda, nunca `float`.
 6. Nenhum endpoint próprio recebe PAN, CVV ou dados completos de cartão.
 7. Secrets e dados sensíveis nunca são enviados ao cliente ou gravados em logs.
+   O payload do provedor é dado pessoal, fica somente na inbox e está sujeito a
+   retenção e expurgo.
 8. Segurança e observabilidade fazem parte do produto, não são complementos.
 9. Mensagens podem ser entregues mais de uma vez; seus efeitos são idempotentes.
 10. Nenhuma publicação depende de uma escrita simultânea e não transacional no
@@ -305,6 +314,11 @@ o Swagger UI representa no diagrama.
 - [Decisão arquitetural: Zap e OpenTelemetry](docs/decisions/0008-observability-stack.md)
 - [Decisão arquitetural: Railway](docs/decisions/0009-railway-deployment.md)
 - [Decisão arquitetural: acesso às rotas](docs/decisions/0010-route-access-model.md)
+- [Decisão arquitetural: recepção de webhooks e conteúdo da outbox](docs/decisions/0011-webhook-reception-and-outbox.md)
+- [Decisão arquitetural: relay do outbox e topologia](docs/decisions/0012-outbox-relay-and-topology.md)
+- [Decisão arquitetural: transação, transições e falha do consumer](docs/decisions/0013-consumer-transactions-transitions-and-retry.md)
+- [Decisão arquitetural: dados sensíveis, retenção e superfície de erro](docs/decisions/0017-sensitive-data-and-error-handling.md)
+- [Dados, retenção e modelo de ameaça](docs/security.md)
 - [Guia de contribuição](CONTRIBUTING.md)
 - [Política de suporte](SUPPORT.md)
 - [Changelog](CHANGELOG.md)

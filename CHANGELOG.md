@@ -114,8 +114,23 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Decisão de recepção de webhooks da Fase 3: contrato de resposta por
   situação, que define quando o provedor deve reentregar, e mensagem de
   outbox por referência ao evento, sem copiar o payload do provedor.
+- Classificação dos dados persistidos, política de retenção e modelo de ameaça,
+  registrados no ADR 0017 e em `docs/security.md`. As duas cópias do payload da
+  Stripe em `webhook_events` são declaradas como dados pessoais, cada uma com
+  finalidade, acesso e prazo de retenção escritos, e `last_error` passa a ser
+  tratado como superfície pública por ser devolvido pela API operacional.
+- Procedimento operacional de expurgo com o SQL correspondente. A `0.1.0` não
+  terá expurgo automatizado, e a ausência de automação passa a ser decisão
+  registrada em vez de retenção indefinida silenciosa.
 
 ### Changed
+
+- Canal privado de relato de vulnerabilidades habilitado no repositório. O
+  `SECURITY.md` deixa de instruir a abertura de issue pública provisória e
+  aponta para o formulário privado do GitHub.
+- README e `SECURITY.md` deixam de sugerir ausência de dados pessoais. A
+  ausência de dado completo de cartão continua verdadeira e passa a ser
+  apresentada apenas como o que é: consequência do Checkout hospedado.
 
 - Documentação sincronizada com o fim da Fase 2, distinguindo o checkout já
   executável do pipeline assíncrono planejado para a Fase 3 e resumindo o estado
