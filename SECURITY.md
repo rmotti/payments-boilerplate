@@ -24,9 +24,9 @@ tempo parcial e não oferece SLA nem recompensa.
 ## Dados persistidos
 
 **A aplicação armazena dados pessoais.** Cada evento recebido da Stripe é
-gravado duas vezes em `webhook_events` — os bytes assinados em `raw_payload` e o
-evento parseado em `payload` — e um evento de Checkout carrega nome, e-mail,
-telefone e endereços do cliente.
+gravado duas vezes em `webhook_events` — o corpo exato cuja assinatura foi
+verificada em `raw_payload` e o evento parseado em `payload` — e um evento de
+Checkout carrega nome, e-mail, telefone e endereços do cliente.
 
 A aplicação não armazena dado completo de cartão, porque o Checkout hospedado
 faz com que o número nunca chegue a este código. Isso não torna o restante do
@@ -60,7 +60,9 @@ Mudanças que quebrem qualquer um destes pontos precisam de decisão registrada:
 - `Stripe-Signature` é verificada sobre os bytes originais da requisição antes
   de desserializar ou persistir um evento como válido.
 - As mensagens publicadas no RabbitMQ carregam referência ao evento, não uma
-  cópia dele. O broker, as filas de retry e a DLQ não contêm dados pessoais.
+  cópia dele. O broker, as filas de retry e a DLQ não recebem o payload nem
+  dados diretos do cliente, mas suas referências continuam protegidas como
+  dados operacionais potencialmente relacionáveis.
 - As queries da API operacional nunca selecionam `raw_payload` ou `payload`.
 - `last_error` é persistido e devolvido pela API operacional. É superfície
   pública: sanitize antes de truncar, e nunca inclua payload, credencial, DSN ou

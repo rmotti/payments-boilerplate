@@ -15,9 +15,11 @@ dados completos de cartão como se fosse ausência de dados pessoais. Não é. O
 `webhook_events` guarda **duas** cópias de cada evento da Stripe, em
 `00002_payments.sql:124-136`:
 
-- `raw_payload BYTEA`: os bytes exatos que o provedor assinou, preservados
-  porque `jsonb` reordena chaves e descarta formatação, e portanto não consegue
-  responder depois "o que exatamente foi assinado";
+- `raw_payload BYTEA`: o corpo exato cuja assinatura foi verificada durante a
+  requisição, preservado porque `jsonb` reordena chaves e descarta formatação;
+  como o header `Stripe-Signature` não é persistido, esses bytes sozinhos não
+  permitem reverificação posterior nem constituem prova criptográfica
+  independente;
 - `payload JSONB`: o mesmo evento já parseado, para consulta e reprocessamento.
 
 Um `checkout.session.completed` real carrega `customer_details` com nome,
@@ -49,9 +51,10 @@ O desenho também já limita a exposição em um ponto importante. Por decisão 
 RabbitMQ carrega apenas referência ao evento — `messageId`, `type`,
 `schemaVersion`, `occurredAt`, `correlationId` e `webhookEventId`, como se vê em
 `internal/adapters/rabbitmq/publisher.go:110-117`. O broker, as filas de retry e
-a DLQ não contêm dados pessoais. Isso não é um detalhe menor: significa que
-existe **um único sistema** sujeito a retenção e controle de acesso sobre esses
-dados, o PostgreSQL, e não dois com posturas diferentes.
+a DLQ não contêm uma cópia do payload. Eles ainda carregam identificadores
+operacionais que podem ser relacionados à inbox e continuam sujeitos a controle
+de acesso e disposição; o PostgreSQL é apenas o único sistema com o evento
+completo.
 
 ## Decisão
 
@@ -59,8 +62,10 @@ dados, o PostgreSQL, e não dois com posturas diferentes.
 
 Nenhum documento do repositório pode afirmar, direta ou indiretamente, que a
 aplicação não armazena dados pessoais. O critério correto é o inverso: a
-instalação armazena dados pessoais recebidos do provedor de pagamento, e quem
-opera uma implantação é o controlador desses dados.
+instalação armazena dados pessoais recebidos do provedor de pagamento. A
+organização que determina a finalidade e os meios normalmente atua como
+controladora; cada implantação precisa definir seus papéis jurídicos, pois
+operar a infraestrutura não torna alguém automaticamente controlador.
 
 O que o projeto continua **não** armazenando é o dado completo de cartão. Isso
 é uma propriedade do desenho — o número nunca chega à aplicação, porque o
@@ -72,30 +77,35 @@ aqui.
 | # | Local | Conteúdo | Contém dado pessoal | Finalidade |
 | --- | --- | --- | --- | --- |
 | 1 | Requisição HTTP de webhook (memória) | Evento completo | Sim | Verificar assinatura sobre os bytes originais |
-| 2 | `webhook_events.raw_payload` | Bytes assinados | Sim | Provar o que foi assinado; reverificação e auditoria |
+| 2 | `webhook_events.raw_payload` | Corpo exato cuja assinatura foi verificada | Sim | Auditoria e diagnóstico do corpo recebido; não permite reverificação isoladamente |
 | 3 | `webhook_events.payload` | Evento parseado | Sim | Processamento, reprocessamento e consulta |
 | 4 | `webhook_events.last_error` | Texto de erro truncado | Por acidente, se não sanitizado | Diagnóstico operacional |
 | 5 | `outbox_events.last_error` | Texto de erro truncado | Por acidente, se não sanitizado | Diagnóstico da publicação |
-| 6 | `outbox_events` (demais colunas) | Referência ao evento | Não | Publicação transacional |
-| 7 | Mensagem no RabbitMQ | Referência ao evento | Não | Transporte |
-| 8 | Filas de retry e DLQ | Referência ao evento | Não | Retentativa e quarentena |
-| 9 | Respostas de `GET /v1/webhook-events*` | Metadados + `lastError` | Somente via `lastError` | Inspeção autenticada |
-| 10 | Logs da aplicação | Metadados de requisição | Não deve conter | Operação |
-| 11 | Traces OTLP | Atributos de `otelhttp` + serviço | Não deve conter | Observabilidade |
-| 12 | Backups do PostgreSQL | Cópia integral de 1–5 | Sim | Recuperação |
-| 13 | `orders`, `payments`, `payment_attempts` | Identificadores e valores | Não; identificadores do provedor | Estado financeiro |
+| 6 | `outbox_events` (demais colunas) | Referência e correlação do evento | Potencialmente, por correlação | Publicação transacional |
+| 7 | Mensagem no RabbitMQ | Referência e correlação do evento | Potencialmente, por correlação | Transporte |
+| 8 | Filas de retry e DLQ | A mesma referência da mensagem | Potencialmente, por correlação | Retentativa e quarentena |
+| 9 | Respostas de `GET /v1/webhook-events*` | IDs, metadados + `lastError` | Potencialmente; diretamente via `lastError` não sanitizado | Inspeção autenticada |
+| 10 | Logs da aplicação | Método, path, correlação e erros | Potencialmente; não deve conter payload, credencial ou entrada livre | Operação |
+| 11 | Traces OTLP | Atributos de `otelhttp` + serviço | Potencialmente; não deve conter payload, credencial ou entrada livre | Observabilidade |
+| 12 | Backups do PostgreSQL | Cópia integral do banco | Sim | Recuperação |
+| 13 | `orders` | ID, produto, quantidade, valores e chave de idempotência livre | Potencialmente | Estado comercial e idempotência |
+| 14 | `payments` | IDs, provedor, estado e valores | Potencialmente, por correlação | Estado financeiro |
+| 15 | `payment_attempts` | Chave de idempotência, IDs da Stripe, URL de Checkout e mensagem de falha | Potencialmente; URL e entrada livre são confidenciais | Execução e diagnóstico do checkout |
 
-Linhas 6, 7 e 8 são consequência direta do ADR 0011 e devem permanecer assim.
-Adicionar payload à mensagem publicada reabriria a decisão inteira.
+Linhas 6, 7 e 8 são consequência direta do ADR 0011 e devem permanecer sem o
+payload do provedor. Isso reduz a exposição, mas não retira do escopo de
+proteção identificadores que possam ser relacionados à inbox. Adicionar payload
+à mensagem publicada reabriria a decisão inteira.
 
 ### 3. Finalidade, acesso e retenção por cópia
 
-**`raw_payload` (cópia 2).** Finalidade: reverificar a assinatura e responder
-"o que exatamente o provedor assinou" em uma disputa. Acesso: somente conexão
-direta ao banco; nenhuma rota da API o expõe, e nenhuma deve passar a expor.
-Retenção recomendada: 90 dias após `processed_at`. Depois disso a capacidade de
-reverificar deixa de compensar a exposição, porque a Stripe é a cópia
-autoritativa para recuperação e mantém os eventos do lado dela.
+**`raw_payload` (cópia 2).** Finalidade: preservar o corpo exato recebido para
+auditoria, diagnóstico e comparação com a cópia parseada, depois de a assinatura
+ter sido verificada durante a requisição. Acesso: somente conexão direta ao
+banco; nenhuma rota da API o expõe, e nenhuma deve passar a expor. O header de
+assinatura não é persistido, e a coluna não permite reverificação posterior nem
+prova independente de origem. Retenção recomendada: 90 dias após
+`processed_at`; a Stripe permanece como fonte externa para recuperação.
 
 **`payload` (cópia 3).** Finalidade: processar e reprocessar o evento. Acesso:
 o consumer, e conexão direta ao banco para diagnóstico. Retenção recomendada:
@@ -122,14 +132,16 @@ dados pessoais — e precisam de cifragem em repouso e do mesmo controle de aces
 do banco. Em uma implantação Railway isso é configuração do provedor, não do
 código deste repositório.
 
-**DLQ (cópias 7 e 8).** Não contêm dados pessoais, apenas referências. A
-retenção é operacional e não de privacidade: uma mensagem parada na DLQ é um
-incidente aberto, e o critério é resolvê-la, não expirá-la. Purgar a DLQ apaga a
-única lista de eventos que ficaram sem efeito.
+**DLQ (cópias 7 e 8).** Não contém o payload nem dados diretos do cliente, mas
+carrega referências potencialmente relacionáveis à inbox. Sua retenção é
+principalmente operacional: uma mensagem parada na DLQ é um incidente aberto, e
+o critério é resolvê-la, não expirá-la. Purgar a DLQ apaga a única lista de
+eventos que ficaram sem efeito.
 
 **Logs e traces (cópias 10 e 11).** Nenhum dos dois pode conter payload, chave,
-credencial ou dado pessoal. É regra de conteúdo, verificada em E8b. A retenção é
-a do backend escolhido pela instalação.
+credencial, identificador fornecido livremente ou dado direto do cliente. Paths
+e correlações ainda podem ser pseudônimos relacionáveis. A regra de conteúdo é
+verificada em E8b, e a retenção é a do backend escolhido pela implantação.
 
 ### 4. Expurgo: procedimento operacional, não automação, na 0.1.0
 
@@ -149,7 +161,7 @@ implícita. A ausência de expurgo passa a ser uma decisão escrita, com prazo
 recomendado e procedimento publicado, e não um comportamento silencioso.
 
 A automação é reavaliada quando as métricas de E5 estiverem estáveis. O trabalho
-está registrado como issue derivada.
+está registrado como `E8A-7` no backlog oficial de `docs/security.md`.
 
 ### 5. `last_error` é superfície pública e precisa ser sanitizado
 
@@ -172,11 +184,12 @@ sobre valores sentinela.
 
 ### 6. Responsabilidade em implantação self-hosted
 
-Quem opera uma implantação é o controlador dos dados. Este repositório entrega
-o desenho e o procedimento; não entrega conformidade. São responsabilidade da
-implantação: cifragem em repouso, retenção efetiva de backups, controle de
-acesso ao banco e ao broker, execução do expurgo, base legal para o tratamento,
-resposta a titulares e resposta a incidentes.
+Este repositório entrega o desenho e o procedimento; não entrega conformidade.
+Cada implantação define quem determina finalidade e meios, quem processa os
+dados em seu nome e as responsabilidades contratuais correspondentes. Também
+são responsabilidades da implantação: cifragem em repouso, retenção efetiva de
+backups, controle de acesso ao banco e ao broker, execução do expurgo, base
+legal para o tratamento, resposta a titulares e resposta a incidentes.
 
 ## Modelo de ameaça
 
@@ -198,11 +211,12 @@ Um corpo acima do limite ainda permite provocar erro deliberadamente; é
 limitação conhecida do ADR 0011.
 
 **Pessoa com acesso operacional** — acessa banco, broker, logs e traces
-legitimamente. Enxerga todos os dados pessoais das cópias 1–5 e 12. O projeto
-opõe apenas minimização: payloads fora de logs, traces e mensagens, e um único
-sistema a controlar. Não há mascaramento por coluna, cifragem em nível de
-aplicação nem trilha de auditoria de leitura no banco. É a exposição mais ampla
-que resta, e é assumida.
+legitimamente. Pode correlacionar identificadores e acessar todos os dados
+pessoais persistidos no banco e nos backups. O projeto opõe apenas minimização:
+payloads fora de logs, traces e mensagens, com o evento completo apenas no
+PostgreSQL. Não há mascaramento por coluna, cifragem em nível de aplicação nem
+trilha de auditoria de leitura no banco. É a exposição mais ampla que resta, e
+é assumida.
 
 **Provedor comprometido, ou alguém que capture uma entrega** — o
 `STRIPE_WEBHOOK_SECRET` é a única prova de origem. Se ele vazar, eventos forjados
@@ -231,9 +245,10 @@ e torna o evento forjado auditável depois. Não há segunda prova de origem.
 
 ### Não persistir `raw_payload`, guardando apenas `payload`
 
-Rejeitada. Elimina uma cópia, mas destrói a capacidade de responder o que foi
-assinado: `jsonb` reordena chaves e normaliza formatação, então a reverificação
-se torna impossível. A perda é justamente na disputa em que a prova importa.
+Rejeitada. Elimina uma cópia, mas perde o corpo exatamente como recebido:
+`jsonb` reordena chaves e normaliza formatação. Preservar esses bytes melhora a
+auditoria e permite comparar o recebido com a representação processada, embora
+não permita reverificar a assinatura sem o header que não é persistido.
 
 ### Cifrar as colunas de payload em nível de aplicação
 
@@ -275,8 +290,8 @@ tomada, e ninguém sabe que havia uma a tomar.
   invariante testada.
 - O escopo do modelo de ameaça delimita o que a instalação precisa cobrir por
   conta própria.
-- O broker permanece fora do escopo de dados pessoais, e a instalação tem um
-  único sistema a controlar.
+- O broker permanece sem uma cópia do payload; suas referências continuam
+  protegidas como dados operacionais potencialmente relacionáveis.
 
 ### Limitações
 
@@ -306,7 +321,8 @@ Esta ADR é documentação. O que ela decide se torna código em E8b:
 - procedimento de expurgo publicado em `docs/security.md` e referenciado pelo
   guia operacional de E9.
 
-As issues derivadas estão listadas em `docs/security.md`.
+Os itens derivados usam identificadores estáveis e estão registrados no backlog
+oficial de `docs/security.md`; não há alegação de que já existam issues externas.
 
 ## Referências
 

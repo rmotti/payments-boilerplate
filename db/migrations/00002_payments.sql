@@ -128,9 +128,10 @@ CREATE TABLE webhook_events (
     provider          TEXT        NOT NULL,
     provider_event_id TEXT        NOT NULL,
     event_type        TEXT        NOT NULL,
-    -- The bytes the provider signed. jsonb reorders keys and drops formatting,
-    -- so it cannot answer "what exactly was signed" later, and those bytes are
-    -- unrecoverable once the request is gone.
+    -- The exact request bytes whose signature was verified. jsonb reorders keys
+    -- and drops formatting, so it cannot preserve the body as received. The
+    -- signature header is not stored, therefore this column is not independent
+    -- cryptographic proof and cannot by itself reverify the signature later.
     raw_payload       BYTEA       NOT NULL,
     -- The same event parsed, for querying and reprocessing.
     payload           JSONB       NOT NULL,
