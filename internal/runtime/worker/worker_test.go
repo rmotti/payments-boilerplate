@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"strings"
@@ -8,13 +8,13 @@ import (
 func TestInstanceIdentityIsUniquePerProcess(t *testing.T) {
 	t.Parallel()
 
-	first, err := instanceIdentity("worker")
+	first, err := InstanceIdentity("worker")
 	if err != nil {
-		t.Fatalf("first instanceIdentity() error = %v", err)
+		t.Fatalf("first InstanceIdentity() error = %v", err)
 	}
-	second, err := instanceIdentity("worker")
+	second, err := InstanceIdentity("worker")
 	if err != nil {
-		t.Fatalf("second instanceIdentity() error = %v", err)
+		t.Fatalf("second InstanceIdentity() error = %v", err)
 	}
 	if first == second {
 		t.Fatalf("instance identities are equal: %q", first)

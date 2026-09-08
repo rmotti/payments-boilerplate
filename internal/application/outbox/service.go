@@ -130,14 +130,34 @@ type Service struct {
 	observer   Observer
 	owner      string
 	config     Config
+	testHooks  TestHooks
 }
 
 // Option customizes deterministic dependencies in tests.
 type Option func(*Service)
 
+// TestHooks exposes the narrow failure window between a broker confirm and
+// settlement of the outbox row. It is deliberately available only through an
+// explicit constructor option: production configuration and environment
+// variables cannot enable fault injection.
+//
+// Returning an error from BeforeSettlement simulates the relay stopping after
+// the broker accepted a message but before PostgreSQL recorded it. The lease
+// remains unsettled and may be published again after it expires, which is the
+// required at-least-once behaviour.
+type TestHooks struct {
+	BeforeSettlement func(message domain.Message) error
+}
+
 // WithObserver reports stuck and abandoned messages.
 func WithObserver(observer Observer) Option {
 	return func(s *Service) { s.observer = observer }
+}
+
+// WithTestHooks installs deterministic fault injection for tests. Application
+// binaries never pass this option.
+func WithTestHooks(hooks TestHooks) Option {
+	return func(s *Service) { s.testHooks = hooks }
 }
 
 // NewService wires the relay to its ports. The owner identifies this relay
@@ -210,6 +230,11 @@ func (s *Service) publishOne(ctx, publicationCtx context.Context, lease Lease) (
 	// clock skew back into the decision this deadline is meant to protect.
 	publishErr := s.publisher.Publish(publicationCtx, lease.Message)
 	if publishErr == nil {
+		if s.testHooks.BeforeSettlement != nil {
+			if err := s.testHooks.BeforeSettlement(lease.Message); err != nil {
+				return 0, fmt.Errorf("before outbox settlement: %w", err)
+			}
+		}
 		// Settling uses the parent context: the publication already happened,
 		// and recording it matters even if the lease is about to expire.
 		if err := s.repository.Published(ctx, s.owner, lease.Message.ID); err != nil {

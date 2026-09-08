@@ -1,4 +1,9 @@
 // Command api starts the public HTTP API.
+//
+// It owns only the concerns of a process: reading configuration, turning
+// signals into a cancelled context and mapping a failure to an exit code. The
+// composition it runs lives in internal/runtime/api, where tests can start the
+// same wiring this binary starts.
 package main
 
 import (
@@ -7,24 +12,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/rmotti/payments-boilerplate/internal/adapters/catalog"
-	stripeadapter "github.com/rmotti/payments-boilerplate/internal/adapters/payments/stripe"
-	"github.com/rmotti/payments-boilerplate/internal/adapters/postgres/repositories"
-	orderapp "github.com/rmotti/payments-boilerplate/internal/application/orders"
-	paymentapp "github.com/rmotti/payments-boilerplate/internal/application/payments"
-	webhookapp "github.com/rmotti/payments-boilerplate/internal/application/webhooks"
-	"github.com/rmotti/payments-boilerplate/internal/platform/auth"
-	"github.com/rmotti/payments-boilerplate/internal/platform/buildinfo"
 	"github.com/rmotti/payments-boilerplate/internal/platform/config"
-	"github.com/rmotti/payments-boilerplate/internal/platform/database"
-	"github.com/rmotti/payments-boilerplate/internal/platform/health"
-	"github.com/rmotti/payments-boilerplate/internal/platform/logging"
-	"github.com/rmotti/payments-boilerplate/internal/platform/retry"
-	"github.com/rmotti/payments-boilerplate/internal/platform/telemetry"
-	httpserver "github.com/rmotti/payments-boilerplate/internal/transport/http"
-	"go.uber.org/zap"
+	runtimeapi "github.com/rmotti/payments-boilerplate/internal/runtime/api"
 )
 
 func main() {
@@ -35,80 +25,13 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load("payments-api", ":8080", false)
+	cfg, err := config.Load(runtimeapi.ServiceName, runtimeapi.DefaultAddress, false)
 	if err != nil {
 		return err
 	}
-	apiKeyVerifier, err := auth.NewAPIKeyVerifier(cfg.IntegrationAPIKeys)
-	if err != nil {
-		return fmt.Errorf("configure integration authentication: %w", err)
-	}
-	if err := cfg.ValidateStripe(); err != nil {
-		return fmt.Errorf("configure Stripe: %w", err)
-	}
-	logger, err := logging.New(cfg)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = logger.Sync() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	shutdownTelemetry, err := telemetry.New(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-		defer cancel()
-		if err := shutdownTelemetry(shutdownCtx); err != nil {
-			logger.Error("telemetry shutdown failed", zap.Error(err))
-		}
-	}()
-
-	startupCtx, cancelStartup := context.WithTimeout(ctx, cfg.StartupTimeout)
-	defer cancelStartup()
-	var db *database.Database
-	if err := retry.Do(startupCtx, 500*time.Millisecond, 5*time.Second, func() error {
-		var openErr error
-		db, openErr = database.Open(startupCtx, cfg, logger)
-		return openErr
-	}); err != nil {
-		return fmt.Errorf("initialize postgres: %w", err)
-	}
-	defer func() {
-		if err := db.Close(); err != nil {
-			logger.Error("postgres shutdown failed", zap.Error(err))
-		}
-	}()
-
-	healthService := health.New(cfg.ServiceName, buildinfo.Version, map[string]health.Checker{
-		"postgres": db.Ping,
-	})
-	orderService := orderapp.NewService(catalog.Demo(), repositories.NewOrderRepository(db.GORM))
-	checkoutService := paymentapp.NewService(
-		orderService,
-		repositories.NewPaymentRepository(db.GORM),
-		stripeadapter.NewCheckout(cfg.StripeSecretKey, cfg.StripeSuccessURL, cfg.StripeCancelURL),
-	)
-	webhookRepository := repositories.NewWebhookRepository(db.SQL)
-	webhookService := webhookapp.NewService(
-		stripeadapter.NewWebhook(cfg.StripeWebhookSecret),
-		webhookRepository,
-	)
-	operationsService := webhookapp.NewOperationsService(webhookRepository)
-	apiHandler := httpserver.NewAPIHandler(healthService, orderService, checkoutService, webhookService, operationsService)
-	server := httpserver.New(httpserver.Config{
-		Address:         cfg.HTTPAddress,
-		ShutdownTimeout: cfg.ShutdownTimeout,
-		DocsEnabled:     true,
-	}, logger, apiHandler, apiKeyVerifier)
-
-	logger.Info("api starting",
-		zap.String("address", cfg.HTTPAddress),
-		zap.String("version", buildinfo.Version),
-		zap.String("commit", buildinfo.Commit),
-	)
-	return server.Run(ctx)
+	return runtimeapi.Run(ctx, cfg, runtimeapi.Options{})
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -45,11 +46,18 @@ type Config struct {
 	Address         string
 	ShutdownTimeout time.Duration
 	DocsEnabled     bool
+
+	// Listener, when set, is served instead of binding Address. A caller that
+	// already holds an open socket avoids the race of picking a free port and
+	// then trying to bind it again, which is what lets a test on port zero
+	// learn its own address before the server starts.
+	Listener net.Listener
 }
 
 // Server is a gracefully stoppable HTTP server.
 type Server struct {
 	server          *http.Server
+	listener        net.Listener
 	shutdownTimeout time.Duration
 }
 
@@ -100,6 +108,7 @@ func New(
 			WriteTimeout:      15 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		},
+		listener:        cfg.Listener,
 		shutdownTimeout: cfg.ShutdownTimeout,
 	}
 }
@@ -108,23 +117,42 @@ func New(
 func (s *Server) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
+		if s.listener != nil {
+			errCh <- s.server.Serve(s.listener)
+			return
+		}
 		errCh <- s.server.ListenAndServe()
 	}()
 
 	select {
 	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return fmt.Errorf("serve http: %w", err)
+		return serveError(err)
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 		defer cancel()
-		if err := s.server.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("shutdown http: %w", err)
+		shutdownErr := s.server.Shutdown(shutdownCtx)
+		if shutdownErr != nil {
+			// Shutdown leaves active connections open when its deadline expires.
+			// Close is the forced fallback that makes Run keep its lifecycle
+			// promise even when one handler cannot drain in time.
+			closeErr := s.server.Close()
+			return errors.Join(
+				fmt.Errorf("shutdown http: %w", shutdownErr),
+				closeErr,
+				serveError(<-errCh),
+			)
 		}
+		// Shutdown closes the listener, but wait for Serve itself to return so no
+		// server goroutine remains after Run reports completion.
+		return serveError(<-errCh)
+	}
+}
+
+func serveError(err error) error {
+	if err == nil || errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
+	return fmt.Errorf("serve http: %w", err)
 }
 
 func correlationMiddleware(next http.Handler) http.Handler {

@@ -132,6 +132,17 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ausência de dado completo de cartão continua verdadeira e passa a ser
   apresentada apenas como o que é: consequência do Checkout hospedado.
 
+- Composição executável da API e do worker extraída para `internal/runtime/api`
+  e `internal/runtime/worker`, pacotes importáveis que recebem `context.Context`,
+  `config.Config` e dependências opcionais tipadas pelas portas da aplicação.
+  `cmd/api` e `cmd/worker` passam a responder apenas por configuração, sinais e
+  código de saída, e binários e testes passam a usar a mesma composição. O
+  servidor HTTP aceita um listener já aberto, o que elimina a corrida de escolher
+  uma porta livre e depois tentar abri-la de novo. A substituição de uma porta
+  Stripe dispensa somente a configuração daquele adapter, preservando a
+  validação do checkout ou webhook real que continuar ativo. O shutdown aguarda
+  a goroutine do servidor e força o fechamento depois do timeout. Registrado no
+  [ADR 0014](docs/decisions/0014-testable-composition-and-e2e-boundaries.md).
 - Documentação sincronizada com o fim da Fase 2, distinguindo o checkout já
   executável do pipeline assíncrono planejado para a Fase 3 e resumindo o estado
   do roadmap no README.

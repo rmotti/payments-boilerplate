@@ -94,3 +94,27 @@ func TestValidateStripe(t *testing.T) {
 		})
 	}
 }
+
+func TestStripeValidationsAreIndependent(t *testing.T) {
+	t.Parallel()
+
+	checkout := Config{
+		StripeSecretKey:  "sk_test_example",
+		StripeSuccessURL: "http://localhost:3000/payment/success",
+		StripeCancelURL:  "https://example.com/payment/cancel",
+	}
+	if err := checkout.ValidateStripeCheckout(); err != nil {
+		t.Fatalf("ValidateStripeCheckout() error = %v", err)
+	}
+	if err := checkout.ValidateStripeWebhook(); err == nil {
+		t.Fatal("ValidateStripeWebhook() error = nil without a webhook secret")
+	}
+
+	webhook := Config{StripeWebhookSecret: "whsec_example"}
+	if err := webhook.ValidateStripeWebhook(); err != nil {
+		t.Fatalf("ValidateStripeWebhook() error = %v", err)
+	}
+	if err := webhook.ValidateStripeCheckout(); err == nil {
+		t.Fatal("ValidateStripeCheckout() error = nil without checkout configuration")
+	}
+}

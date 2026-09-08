@@ -188,19 +188,35 @@ func Load(serviceName, defaultHTTPAddress string, requireRabbitMQ bool) (Config,
 	return cfg, nil
 }
 
-// ValidateStripe checks the configuration required by the API checkout flow.
-// It is separate from Load because the worker does not call Stripe.
+// ValidateStripe checks every Stripe dependency used by the API. It is kept as
+// the aggregate validation for callers that use both real adapters.
 func (c Config) ValidateStripe() error {
+	if err := c.ValidateStripeCheckout(); err != nil {
+		return err
+	}
+	return c.ValidateStripeWebhook()
+}
+
+// ValidateStripeCheckout checks the configuration required by the hosted
+// checkout adapter. It is separate from webhook validation because tests may
+// replace either application port independently.
+func (c Config) ValidateStripeCheckout() error {
 	if c.StripeSecretKey == "" {
 		return errors.New("STRIPE_SECRET_KEY is required for the API")
-	}
-	if c.StripeWebhookSecret == "" {
-		return errors.New("STRIPE_WEBHOOK_SECRET is required for the API")
 	}
 	if err := validateReturnURL("STRIPE_SUCCESS_URL", c.StripeSuccessURL); err != nil {
 		return err
 	}
 	return validateReturnURL("STRIPE_CANCEL_URL", c.StripeCancelURL)
+}
+
+// ValidateStripeWebhook checks the endpoint secret used to verify incoming
+// Stripe signatures.
+func (c Config) ValidateStripeWebhook() error {
+	if c.StripeWebhookSecret == "" {
+		return errors.New("STRIPE_WEBHOOK_SECRET is required for the API")
+	}
+	return nil
 }
 
 func validateReturnURL(name, value string) error {

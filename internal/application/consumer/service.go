@@ -93,14 +93,29 @@ type Service struct {
 	interpreter Interpreter
 	observer    Observer
 	config      Config
+	testHooks   TestHooks
 }
 
 // Option customizes deterministic dependencies in tests.
 type Option func(*Service)
 
+// TestHooks exposes the boundary immediately after Repository.Process has
+// committed and before the broker adapter can acknowledge the delivery. It is
+// installed only through an explicit constructor option; production
+// configuration cannot enable fault injection.
+type TestHooks struct {
+	AfterCommit func(eventID string, result Result) error
+}
+
 // WithObserver reports what each message produced.
 func WithObserver(observer Observer) Option {
 	return func(s *Service) { s.observer = observer }
+}
+
+// WithTestHooks installs deterministic fault injection for tests. Application
+// binaries never pass this option.
+func WithTestHooks(hooks TestHooks) Option {
+	return func(s *Service) { s.testHooks = hooks }
 }
 
 // NewService wires the consuming use case to its ports.
@@ -156,6 +171,11 @@ func (s *Service) Handle(ctx context.Context, eventID string) (Handling, error) 
 	)
 	if err != nil {
 		return s.classify(ctx, eventID, err)
+	}
+	if s.testHooks.AfterCommit != nil {
+		if err := s.testHooks.AfterCommit(eventID, result); err != nil {
+			return Handling{}, fmt.Errorf("after consumer commit: %w", err)
+		}
 	}
 
 	if s.observer != nil {
