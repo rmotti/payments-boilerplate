@@ -63,6 +63,9 @@ services:
     environment:
       APP_ENV: development
       PORT: "8080"
+      # Explicit opt-in. The application default is off in every environment;
+      # local development turns Swagger UI on here on purpose.
+      DOCS_ENABLED: "true"
       DATABASE_URL: postgres://payments:payments_local@postgres:5432/payments?sslmode=disable
       INTEGRATION_API_KEYS: ${INTEGRATION_API_KEYS:-}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}

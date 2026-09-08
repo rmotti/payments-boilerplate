@@ -86,6 +86,11 @@ A API fica disponível em `http://localhost:8080`, a documentação em
 `http://localhost:8080/docs/` e o painel local do RabbitMQ em
 `http://localhost:15672`.
 
+A documentação só aparece porque a `.env.example` define `DOCS_ENABLED=true`. O
+default da aplicação é `false` em todos os ambientes, e fora de
+`APP_ENV=development` habilitá-la passa a exigir `X-API-Key` válida. Consulte o
+[ADR 0016](docs/decisions/0016-http-surface-and-client-identity.md).
+
 Valide a API sem abrir o navegador:
 
 ```bash
@@ -201,12 +206,16 @@ parte da primeira versão.
 
 Cada instalação atende um único integrador e usa seu próprio banco, conta
 Stripe e credenciais. O modelo aprovado exige `X-API-Key` nas rotas de negócio,
-mantém health público e autentica webhooks pela assinatura da Stripe. No runtime
-atual, `/docs` e `/openapi.yaml` são públicos e o comando `api` os habilita em
-todos os ambientes. Desabilitar ou proteger essa documentação fora do ambiente
-de desenvolvimento permanece planejado para a Fase 4. A API aceita mais de uma
-chave ativa para rotação e responde `401 Unauthorized` sem distinguir chave
-ausente de inválida.
+mantém health público e autentica webhooks pela assinatura da Stripe. A API
+aceita mais de uma chave ativa para rotação e responde `401 Unauthorized` sem
+distinguir chave ausente de inválida.
+
+A documentação é opt-in por `DOCS_ENABLED`, desligada por padrão em todos os
+ambientes. Sem opt-in, `/docs`, `/docs/` e `/openapi.yaml` respondem `404` como
+qualquer caminho inexistente; fora de `APP_ENV=development`, habilitá-los exige
+a mesma `X-API-Key`. Toda resposta carrega headers de segurança e nenhuma emite
+CORS. O worker publica somente `/health`. `X-Forwarded-For` só é acreditado
+quando o peer pertence a `TRUSTED_PROXY_CIDRS`.
 
 ## Jornada da pessoa desenvolvedora
 

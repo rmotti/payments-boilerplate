@@ -51,7 +51,7 @@ está registrada no [ADR 0010](decisions/0010-route-access-model.md):
 | `POST /v1/webhook-events/{webhookEventId}/reprocess` | Header `X-API-Key` obrigatório |
 | `POST /v1/webhooks/stripe` | Sem API key; assinatura Stripe obrigatória |
 | `GET /health` | Público, com resposta mínima |
-| `GET /docs` e `GET /openapi.yaml` | Públicos enquanto a documentação estiver habilitada; o comando `api` atual os habilita em todos os ambientes |
+| `GET /docs`, `GET /docs/` e `GET /openapi.yaml` | Ausentes sem `DOCS_ENABLED`; públicos em `APP_ENV=development` com o opt-in; `X-API-Key` obrigatória com o opt-in em qualquer outro ambiente |
 
 O runtime aplica a política por `operationId`, negando por padrão operações que
 não aparecem na lista pública. Quando a requisição alcança o middleware de
@@ -59,9 +59,9 @@ autenticação, chave ausente ou inválida recebe a mesma resposta `401`, com
 código `unauthorized`, sem revelar detalhes sobre as credenciais ativas. O
 binding OpenAPI pode rejeitar antes, com `400`, headers obrigatórios ausentes ou
 um corpo malformado; em nenhum desses casos o caso de uso é executado. As rotas
-da documentação ficam fora do strict server e não exigem API key.
-Desabilitá-las ou protegê-las fora do ambiente de desenvolvimento permanece
-como atividade da Fase 4.
+da documentação ficam fora do strict server e seguem a política do
+[ADR 0016](decisions/0016-http-surface-and-client-identity.md), descrita
+adiante.
 
 Uma chave válida dará acesso aos pedidos da própria instalação. Multi-tenancy,
 login de consumidores e autorização entre organizações permanecem fora do
@@ -246,12 +246,34 @@ Indica se o processo e suas dependências obrigatórias estão disponíveis. Na 
 o resultado inclui PostgreSQL; no worker, inclui PostgreSQL e RabbitMQ. Retorna
 `200` quando todos os checks estão `up` e `503` quando algum está `down`.
 
-### `GET /docs`
+### `GET /docs`, `GET /docs/` e `GET /openapi.yaml`
 
-Expõe publicamente o Swagger UI gerado a partir do contrato OpenAPI versionado
-quando `DocsEnabled` está ativo. O comando `api` atual mantém essa opção
-habilitada independentemente de `APP_ENV`; a restrição em produção será tratada
-na Fase 4.
+Servem o Swagger UI e o contrato OpenAPI versionado. As três rotas seguem uma
+política única, decidida por `DOCS_ENABLED` e `APP_ENV`:
+
+| `APP_ENV` | `DOCS_ENABLED` | Resposta |
+| --- | --- | --- |
+| qualquer um | `false` (default) | `404`, indistinguível de rota inexistente |
+| `development` | `true` | documentação servida sem credencial |
+| qualquer outro | `true` | `X-API-Key` válida obrigatória; sem ela, `401` |
+
+A autenticação é decidida antes do redirect de `/docs` para `/docs/` e antes da
+verificação de método, de modo que nenhuma resposta revela que as rotas existem.
+Habilitar a documentação fora de `development` registra um warning no startup,
+que nomeia o ambiente e nunca a chave.
+
+### Headers de resposta
+
+Toda resposta, inclusive `404` e as geradas pelo recovery, carrega
+`X-Correlation-ID`, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer`, `Cache-Control: no-store`,
+`X-Frame-Options: DENY` e uma `Content-Security-Policy`. Respostas JSON e o
+documento OpenAPI usam `default-src 'none'; frame-ancestors 'none'`; a página
+do Swagger recebe uma política própria, com os scripts inline liberados por
+hash. A API não emite headers de CORS.
+
+O worker publica somente `GET /health`. As demais operações do contrato não são
+registradas naquele processo e respondem `404`.
 
 ## Fora do contrato da versão 0.1
 

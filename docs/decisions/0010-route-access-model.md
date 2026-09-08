@@ -2,8 +2,9 @@
 
 - Status: aceito
 - Data: 2026-09-06
-- Implementação: concluída para as rotas de negócio; endurecimento da
-  documentação pendente na Fase 4
+- Implementação: concluída para as rotas de negócio. O endurecimento da
+  documentação foi decidido e aplicado pelo
+  [ADR 0016](0016-http-surface-and-client-identity.md)
 
 ## Contexto
 
@@ -67,12 +68,13 @@ pública explícita poderão ignorar a chave do integrador.
 | `GET /v1/orders/{orderId}` | `X-API-Key` obrigatória |
 | `POST /v1/webhooks/stripe` | Público na rede; `Stripe-Signature` obrigatória |
 | `GET /health` da API | Público, com resposta mínima |
-| `GET /docs` e `GET /openapi.yaml` | Públicos quando `DocsEnabled=true`; o comando `api` atual os habilita em todos os ambientes |
+| `GET /docs`, `GET /docs/` e `GET /openapi.yaml` | Opt-in por `DOCS_ENABLED`; públicos apenas em `APP_ENV=development`, autenticados por `X-API-Key` fora dele. Revisado pelo [ADR 0016](0016-http-surface-and-client-identity.md) |
 | `GET /health` do worker | Restrito à rede privada da infraestrutura |
 
-As rotas de documentação não passam pelo strict server e, portanto, não exigem
-`X-API-Key`. Desabilitá-las ou protegê-las fora do ambiente de desenvolvimento
-permanece explicitamente planejado para a Fase 4.
+As rotas de documentação não passam pelo strict server. O
+[ADR 0016](0016-http-surface-and-client-identity.md) revisou esta linha: elas
+passaram a ser opt-in, desligadas por padrão em todos os ambientes, e a exigir
+a mesma `X-API-Key` fora de `APP_ENV=development`.
 
 Público não significa confiável. O webhook é alcançável pela Stripe, mas só é
 aceito depois da verificação criptográfica do header `Stripe-Signature` sobre o
@@ -143,8 +145,9 @@ Essa evolução exige uma nova decisão de produto e arquitetura.
 - Uma chave comprometida dá acesso a todos os pedidos da instalação.
 - Não existe isolamento entre várias empresas no mesmo banco.
 - Revogação e rotação dependem de configuração e novo deploy.
-- O comando `api` ainda expõe `/docs` e `/openapi.yaml` publicamente em qualquer
-  `APP_ENV`; o endurecimento dessa superfície pertence à Fase 4.
+- A documentação era pública em qualquer `APP_ENV`. O
+  [ADR 0016](0016-http-surface-and-client-identity.md) a tornou opt-in,
+  desligada por padrão, e autenticada fora de `development`.
 - Quem adotar o projeto continua responsável por TLS, gestão de secrets,
   controles de borda e adequação do mecanismo ao seu risco.
 

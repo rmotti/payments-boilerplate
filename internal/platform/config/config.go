@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -19,6 +20,10 @@ import (
 // adapter, because configuration must not depend on adapters; a test asserts
 // the two stay equal.
 const PublishAttemptBudget = 5 * time.Second
+
+// EnvironmentDevelopment is the only APP_ENV in which developer conveniences,
+// such as public API documentation, are allowed without further protection.
+const EnvironmentDevelopment = "development"
 
 // Config contains all process configuration loaded from environment variables.
 type Config struct {
@@ -59,6 +64,19 @@ type Config struct {
 	ConsumerRetryDelays []time.Duration `env:"CONSUMER_RETRY_DELAYS" envDefault:"5s,30s,2m,10m"`
 
 	IntegrationAPIKeys []string `env:"INTEGRATION_API_KEYS"`
+
+	// DocsEnabled opts in to serving Swagger UI and the OpenAPI document. The
+	// default is off in every environment: development turns it on explicitly
+	// through .env.example and the Compose file. Outside development the
+	// routes additionally require a valid X-API-Key. See ADR 0016.
+	DocsEnabled bool `env:"DOCS_ENABLED" envDefault:"false"`
+
+	// TrustedProxyCIDRs lists the networks whose X-Forwarded-For header is
+	// believed. Empty means no proxy is trusted and the TCP peer is the
+	// client, which is the safe default for a process reached directly.
+	TrustedProxyCIDRs []string `env:"TRUSTED_PROXY_CIDRS"`
+	// TrustedProxies is the parsed, validated form of TrustedProxyCIDRs.
+	TrustedProxies []netip.Prefix
 
 	StripeSecretKey     string `env:"STRIPE_SECRET_KEY"`
 	StripeWebhookSecret string `env:"STRIPE_WEBHOOK_SECRET"`
@@ -184,8 +202,42 @@ func Load(serviceName, defaultHTTPAddress string, requireRabbitMQ bool) (Config,
 	if cfg.OTelEnabled && cfg.OTelExporterEndpoint == "" {
 		return Config{}, errors.New("OTEL_EXPORTER_OTLP_ENDPOINT is required when telemetry is enabled")
 	}
+	trustedProxies, err := ParseTrustedProxies(cfg.TrustedProxyCIDRs)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.TrustedProxies = trustedProxies
 
 	return cfg, nil
+}
+
+// IsDevelopment reports whether the process runs under the development
+// environment, the only one where documentation may be served without a key.
+func (c Config) IsDevelopment() bool {
+	return c.Environment == EnvironmentDevelopment
+}
+
+// ParseTrustedProxies validates TRUSTED_PROXY_CIDRS. Every entry must be a
+// CIDR block; a bare address is rejected so a typo such as "10.0.0.1" cannot
+// silently trust a whole network or nothing at all. Blank entries left by a
+// trailing comma are ignored.
+func ParseTrustedProxies(values []string) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS entry %q must be a CIDR block such as 10.0.0.0/8", value)
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+	return prefixes, nil
 }
 
 // ValidateStripe checks every Stripe dependency used by the API. It is kept as

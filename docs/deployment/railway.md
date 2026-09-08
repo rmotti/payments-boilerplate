@@ -51,6 +51,17 @@ SHUTDOWN_TIMEOUT=15s
 OTEL_ENABLED=false
 ```
 
+Não defina `DOCS_ENABLED`. O default é `false`, e com ele `/docs`, `/docs/` e
+`/openapi.yaml` respondem `404`. Se precisar do Swagger UI no ambiente
+implantado, defina `DOCS_ENABLED=true` e alcance as três rotas apresentando uma
+das chaves de `INTEGRATION_API_KEYS` em `X-API-Key`; o startup registrará um
+warning enquanto essa configuração estiver ativa.
+
+A Railway termina TLS e encaminha para a aplicação, então defina
+`TRUSTED_PROXY_CIDRS` com a faixa privada do ambiente caso queira que o
+endereço do cliente venha de `X-Forwarded-For`. Sem essa variável, o header é
+ignorado e o peer é tratado como cliente, que é o comportamento seguro.
+
 `PORT` é fornecida automaticamente pela Railway. Quando houver um collector
 OTLP no ambiente, habilite `OTEL_ENABLED` e configure
 `OTEL_EXPORTER_OTLP_ENDPOINT` com sua URL base HTTP.
@@ -106,11 +117,13 @@ Quando a Railway publicar um status de deployment para o GitHub, o workflow
 
 ```bash
 curl --fail --show-error https://seu-dominio.up.railway.app/health
-curl --fail --show-error https://seu-dominio.up.railway.app/openapi.yaml
+curl --fail --show-error -H "X-API-Key: $API_KEY" \
+  https://seu-dominio.up.railway.app/openapi.yaml
 ```
 
-A primeira chamada deve retornar HTTP 200 com `postgres: up`. A segunda deve
-retornar o contrato servido pela mesma versão da aplicação.
+A primeira chamada deve retornar HTTP 200 com `postgres: up`. A segunda só
+funciona com `DOCS_ENABLED=true`: sem o opt-in ela retorna `404` e, com o
+opt-in mas sem chave válida, `401`.
 
 ## Referências
 

@@ -72,7 +72,7 @@ múltiplos provedores.
 - [x] Testar interrupções entre PostgreSQL, relay, RabbitMQ e consumer.
 - [ ] Publicar métricas de outbox, filas, retries e DLQ.
 - [ ] Aplicar rate limiting às operações públicas e aos endpoints sujeitos a abuso.
-- [ ] Desabilitar ou proteger o Swagger UI fora do ambiente de desenvolvimento.
+- [x] Desabilitar ou proteger o Swagger UI fora do ambiente de desenvolvimento.
 - [ ] Revisar logs, secrets e tratamento de dados pessoais.
 - [ ] Criar guia de implantação e checklist operacional.
 - [ ] Criar guia de contribuição e templates do repositório.

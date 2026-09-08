@@ -46,21 +46,32 @@ const (
 )
 
 type harness struct {
-	t            *testing.T
-	db           *sql.DB
-	databaseURL  string
-	rabbitURL    string
-	provider     *fakePaymentProvider
-	contract     *contracttest.Validator
-	apiBaseURL   string
-	apiCancel    context.CancelFunc
-	apiDone      <-chan error
-	workerCancel context.CancelFunc
-	workerDone   <-chan error
-	logs         *safeBuffer
+	t             *testing.T
+	db            *sql.DB
+	databaseURL   string
+	rabbitURL     string
+	provider      *fakePaymentProvider
+	contract      *contracttest.Validator
+	apiBaseURL    string
+	apiCancel     context.CancelFunc
+	apiDone       <-chan error
+	workerBaseURL string
+	workerCancel  context.CancelFunc
+	workerDone    <-chan error
+	logs          *safeBuffer
+	// environment and docsEnabled are what a deployment configures. They are
+	// harness fields, not constants, because the documentation policy is a
+	// function of both and each combination is a different process.
+	environment string
+	docsEnabled bool
 }
 
 func newHarness(t *testing.T, startWorker bool) *harness {
+	t.Helper()
+	return newConfiguredHarness(t, startWorker, "test", false)
+}
+
+func newConfiguredHarness(t *testing.T, startWorker bool, environment string, docsEnabled bool) *harness {
 	t.Helper()
 	databaseURL := os.Getenv(databaseURLEnv)
 	rabbitURL := os.Getenv(rabbitURLEnv)
@@ -96,6 +107,7 @@ func newHarness(t *testing.T, startWorker bool) *harness {
 	h := &harness{
 		t: t, db: db, databaseURL: databaseURL, rabbitURL: rabbitURL,
 		provider: &fakePaymentProvider{}, contract: contract, logs: &safeBuffer{},
+		environment: environment, docsEnabled: docsEnabled,
 	}
 	h.cleanupState()
 	t.Cleanup(func() {
@@ -123,7 +135,8 @@ func repositoryRoot(t *testing.T) string {
 
 func (h *harness) runtimeConfig(service, address string) config.Config {
 	return config.Config{
-		ServiceName: service, Environment: "test", HTTPAddress: address,
+		ServiceName: service, Environment: h.environment, HTTPAddress: address,
+		DocsEnabled: h.docsEnabled,
 		DatabaseURL: h.databaseURL, DatabaseMaxOpenConnections: 8,
 		DatabaseMaxIdleConnections: 4, DatabaseConnectionMaxLifetime: time.Minute,
 		RabbitMQURL: h.rabbitURL, IntegrationAPIKeys: []string{apiKeyA, apiKeyB},
@@ -172,8 +185,9 @@ func (h *harness) startWorker() {
 	go func() {
 		done <- workerruntime.Run(ctx, cfg, workerruntime.Options{Listener: listener, Logger: h.logger(), InstanceID: "e2e-worker"})
 	}()
+	h.workerBaseURL = "http://" + listener.Addr().String()
 	h.workerCancel, h.workerDone = cancel, done
-	h.waitHTTPReady("http://" + listener.Addr().String() + "/health")
+	h.waitHTTPReady(h.workerBaseURL + "/health")
 }
 
 func (h *harness) waitHTTPReady(endpoint string) {
@@ -303,6 +317,42 @@ func (h *harness) request(method, path, key string, body any, headers map[string
 		operationID, response.StatusCode, expectation); err != nil {
 		_ = response.Body.Close()
 		h.t.Fatalf("OpenAPI exchange validation: %v", err)
+	}
+	data, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		h.t.Fatalf("read response: %v", err)
+	}
+	return capturedResponse{StatusCode: response.StatusCode, Header: response.Header.Clone()}, data
+}
+
+// rawRequest reaches a path directly, without mapping it to an OpenAPI
+// operation. Documentation routes and unregistered paths are outside the
+// contract, so they have no operation to validate against.
+func (h *harness) rawRequest(baseURL, method, path, key string) (capturedResponse, []byte) {
+	h.t.Helper()
+	request, err := http.NewRequestWithContext(context.Background(), method, baseURL+path, nil)
+	if err != nil {
+		h.t.Fatalf("build request: %v", err)
+	}
+	if key != "" {
+		request.Header.Set("X-API-Key", key)
+	}
+	// Redirects are part of what is under test: /docs must answer with the
+	// redirect itself, and following it would report the target's status.
+	// Keep-alive is off because an idle pooled connection would still be open
+	// when the process is stopped and would consume the whole graceful
+	// shutdown deadline.
+	client := &http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request)
+	if err != nil {
+		h.t.Fatalf("%s %s: %v\nlogs:\n%s", method, path, err, h.logs.String())
 	}
 	data, err := io.ReadAll(response.Body)
 	_ = response.Body.Close()

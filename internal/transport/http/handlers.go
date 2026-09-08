@@ -16,7 +16,8 @@ import (
 )
 
 // ErrNotServed marks an operation the contract declares but this process does
-// not run, such as order creation on the worker's health-only listener.
+// not run. It answers a route that exists and is not served; a route a process
+// does not register at all is simply absent and answers 404.
 var ErrNotServed = errors.New("operation not served by this process")
 
 // OrderCreator is the slice of the order use cases the HTTP layer depends on.
@@ -51,8 +52,9 @@ type APIHandler struct {
 }
 
 // NewAPIHandler composes the HTTP handlers required by the OpenAPI contract.
-// A nil orders service makes order operations answer 501, which is what the
-// worker wants: it shares the contract but only serves health.
+// A nil dependency makes its operations answer 501, for a process that serves
+// part of the contract. A process that serves none of it, such as the worker,
+// uses NewHealthOnly instead and never registers those routes at all.
 func NewAPIHandler(
 	healthService *health.Service,
 	orders OrderCreator,

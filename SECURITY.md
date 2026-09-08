@@ -46,6 +46,10 @@ exemplos reproduzíveis.
 - Trate `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` e `INTEGRATION_API_KEYS`
   como secrets. Nunca os exponha no Swagger UI, em respostas, em logs ou em
   labels de métrica.
+- A documentação HTTP é opt-in por `DOCS_ENABLED`, desligada por padrão em
+  todos os ambientes, e exige `X-API-Key` válida fora de
+  `APP_ENV=development`. Ver
+  [ADR 0016](docs/decisions/0016-http-surface-and-client-identity.md).
 - Trate credenciais e certificados do RabbitMQ como secrets, e não exponha a
   interface de administração à internet pública.
 - Use conexões protegidas e usuários com o menor conjunto de permissões

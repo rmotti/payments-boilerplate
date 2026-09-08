@@ -139,10 +139,17 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 	operationsService := webhookapp.NewOperationsService(webhookRepository)
 
 	apiHandler := httpserver.NewAPIHandler(healthService, orderService, checkoutService, webhookService, operationsService)
+	docsMode := httpserver.DocsModeFor(cfg.DocsEnabled, cfg.IsDevelopment())
+	if docsMode == httpserver.DocsProtected {
+		// The key itself is never logged; only the fact that the routes exist.
+		logger.Warn("api documentation enabled outside development; /docs and /openapi.yaml require a valid X-API-Key",
+			zap.String("environment", cfg.Environment))
+	}
 	server := httpserver.New(httpserver.Config{
 		Address:         cfg.HTTPAddress,
 		ShutdownTimeout: cfg.ShutdownTimeout,
-		DocsEnabled:     true,
+		Docs:            docsMode,
+		TrustedProxies:  cfg.TrustedProxies,
 		Listener:        opts.Listener,
 	}, logger, apiHandler, apiKeyVerifier)
 

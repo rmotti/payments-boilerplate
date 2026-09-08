@@ -147,10 +147,13 @@ política nega acesso por padrão e libera explicitamente apenas health e o
 webhook assinado, cuja confiança vem da verificação da assinatura sobre o corpo
 bruto. O domínio e os casos de uso não conhecem headers ou credenciais.
 
-O comando `api` atual serve Swagger UI e o documento OpenAPI publicamente em
-qualquer `APP_ENV`. Desabilitar ou proteger essa documentação fora do ambiente
-de desenvolvimento permanece na Fase 4. TLS, gestão de secrets e controles de
-borda continuam sob responsabilidade de quem implanta o projeto.
+A documentação é opt-in por `DOCS_ENABLED`, desligada por padrão em todos os
+ambientes, e exige `X-API-Key` fora de `development`. Toda resposta carrega
+headers de segurança, nenhuma emite CORS e `X-Forwarded-For` só é acreditado
+quando o peer pertence a `TRUSTED_PROXY_CIDRS`. TLS, gestão de secrets e
+controles de borda continuam sob responsabilidade de quem implanta o projeto.
+O modelo completo está no
+[ADR 0016](decisions/0016-http-surface-and-client-identity.md).
 
 O modelo completo, alternativas e limitações estão no
 [ADR 0010](decisions/0010-route-access-model.md).
@@ -407,9 +410,13 @@ POST /v1/orders/{orderId}/checkout
 GET  /v1/orders/{orderId}
 POST /v1/webhooks/stripe
 GET  /health
-GET  /docs
-GET  /openapi.yaml
+GET  /docs          (opt-in; autenticado fora de development)
+GET  /docs/         (opt-in; autenticado fora de development)
+GET  /openapi.yaml  (opt-in; autenticado fora de development)
 ```
+
+O worker publica somente `GET /health`. As demais operações do contrato não são
+registradas naquele processo.
 
 O contrato executável detalhado está em [Contrato da API](api.md).
 

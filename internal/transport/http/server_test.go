@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,4 +205,107 @@ func waitForHealth(t *testing.T, url string) (*http.Response, error) {
 		lastErr = errors.New("timed out before the first attempt")
 	}
 	return nil, lastErr
+}
+
+// TestNewHealthOnlyRegistersOnlyHealth is the worker's surface: the contract
+// operations and the documentation are absent, not present and refused.
+func TestNewHealthOnlyRegistersOnlyHealth(t *testing.T) {
+	t.Parallel()
+
+	handler := NewHealthOnly(Config{}, zap.NewNop(), health.New("payments-worker", "test", map[string]health.Checker{
+		"postgres": func(context.Context) error { return nil },
+	})).server.Handler
+
+	healthRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(healthRecorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil))
+	if healthRecorder.Code != http.StatusOK {
+		t.Fatalf("GET /health status = %d, want 200", healthRecorder.Code)
+	}
+	assertStrictSecurityHeaders(t, healthRecorder.Header())
+
+	absent := []struct{ method, path string }{
+		{http.MethodPost, "/v1/orders"},
+		{http.MethodGet, "/v1/orders/ord_1"},
+		{http.MethodPost, "/v1/orders/ord_1/checkout"},
+		{http.MethodGet, "/v1/webhook-events"},
+		{http.MethodPost, "/v1/webhook-events/evt_1/reprocess"},
+		{http.MethodPost, "/v1/webhooks/stripe"},
+		{http.MethodGet, "/docs"},
+		{http.MethodGet, "/docs/"},
+		{http.MethodGet, "/openapi.yaml"},
+	}
+	for _, route := range absent {
+		for _, key := range []string{"", testAPIKey} {
+			request := httptest.NewRequestWithContext(context.Background(), route.method, route.path, strings.NewReader("{}"))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Idempotency-Key", "worker-surface")
+			if key != "" {
+				request.Header.Set(apiKeyHeader, key)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("%s %s (key %q) status = %d, want 404: the worker must not register it",
+					route.method, route.path, key, recorder.Code)
+			}
+			assertStrictSecurityHeaders(t, recorder.Header())
+		}
+	}
+}
+
+// TestHealthOnlyRunLifecycle proves the worker's server starts, answers and
+// stops cleanly through the same Run the API uses.
+func TestHealthOnlyRunLifecycle(t *testing.T) {
+	t.Parallel()
+
+	listener := listen(t)
+	address := listener.Addr().String()
+	server := NewHealthOnly(Config{ShutdownTimeout: 5 * time.Second, Listener: listener}, zap.NewNop(),
+		health.New("payments-worker", "test", map[string]health.Checker{
+			"rabbitmq": func(context.Context) error { return nil },
+		}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(ctx) }()
+
+	response, err := waitForHealth(t, "http://"+address+"/health")
+	if err != nil {
+		t.Fatalf("GET /health error = %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /health status = %d, want 200", response.StatusCode)
+	}
+	// A client of its own, without keep-alive: a connection left idle in a
+	// shared pool would still be open at shutdown and would consume the whole
+	// graceful deadline before Run could return.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/openapi.yaml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("GET /openapi.yaml error = %v", err)
+	}
+	_ = spec.Body.Close()
+	if spec.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /openapi.yaml on the worker status = %d, want 404", spec.StatusCode)
+	}
+	client.CloseIdleConnections()
+	// The readiness probe above used the shared client, whose pooled
+	// connection would outlive this test the same way.
+	http.DefaultClient.CloseIdleConnections()
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run() did not return after the context was cancelled")
+	}
 }

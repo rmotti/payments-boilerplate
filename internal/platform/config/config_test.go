@@ -118,3 +118,79 @@ func TestStripeValidationsAreIndependent(t *testing.T) {
 		t.Fatal("ValidateStripeCheckout() error = nil without checkout configuration")
 	}
 }
+
+func TestLoadDisablesDocsByDefaultInEveryEnvironment(t *testing.T) {
+	for _, environment := range []string{"development", "test", "staging", "production"} {
+		t.Run(environment, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://example")
+			t.Setenv("APP_ENV", environment)
+			t.Setenv("DOCS_ENABLED", "")
+
+			cfg, err := Load("test-api", ":8000", false)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.DocsEnabled {
+				t.Fatalf("DocsEnabled = true in %s without opt-in", environment)
+			}
+			if got, want := cfg.IsDevelopment(), environment == EnvironmentDevelopment; got != want {
+				t.Fatalf("IsDevelopment() = %t in %s, want %t", got, environment, want)
+			}
+		})
+	}
+}
+
+func TestLoadParsesDocsOptIn(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("DOCS_ENABLED", "true")
+
+	cfg, err := Load("test-api", ":8000", false)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.DocsEnabled {
+		t.Fatal("DocsEnabled = false with DOCS_ENABLED=true")
+	}
+}
+
+func TestLoadParsesTrustedProxyCIDRs(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("TRUSTED_PROXY_CIDRS", " 10.1.2.3/8, fd00::1/8 ,")
+
+	cfg, err := Load("test-api", ":8000", false)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.TrustedProxies) != 2 {
+		t.Fatalf("TrustedProxies = %v, want two masked prefixes", cfg.TrustedProxies)
+	}
+	if cfg.TrustedProxies[0].String() != "10.0.0.0/8" || cfg.TrustedProxies[1].String() != "fd00::/8" {
+		t.Fatalf("TrustedProxies = %v, want 10.0.0.0/8 and fd00::/8", cfg.TrustedProxies)
+	}
+}
+
+func TestLoadWithoutTrustedProxiesTrustsNoOne(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "")
+
+	cfg, err := Load("test-api", ":8000", false)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.TrustedProxies) != 0 {
+		t.Fatalf("TrustedProxies = %v, want none", cfg.TrustedProxies)
+	}
+}
+
+func TestLoadRejectsInvalidTrustedProxyCIDRs(t *testing.T) {
+	for _, value := range []string{"10.0.0.1", "10.0.0.0/33", "proxy.internal", "10.0.0.0/8;192.168.0.0/16"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://example")
+			t.Setenv("TRUSTED_PROXY_CIDRS", value)
+
+			if _, err := Load("test-api", ":8000", false); err == nil {
+				t.Fatalf("Load() accepted TRUSTED_PROXY_CIDRS=%q", value)
+			}
+		})
+	}
+}

@@ -212,7 +212,7 @@ verificação automatizada faz parte de E8b.
 | Atacante | Alcance | O projeto opõe | O projeto não opõe |
 | --- | --- | --- | --- |
 | Integrador hostil, com chave válida | Toda a API operacional da instalação | Payloads fora das queries operacionais; sanitização de `last_error`; rate limiting | Segregação por tenant — uma chave válida vê todos os eventos |
-| Terceiro na internet | Health, webhook e Checkout | Verificação de `Stripe-Signature` sobre os bytes originais antes de desserializar; limite de corpo; allowlist de rotas públicas ([ADR 0010](decisions/0010-route-access-model.md)); rate limiting | Resposta de erro provocada por corpo acima do limite; ataque volumétrico |
+| Terceiro na internet | Health, webhook e Checkout | Verificação de `Stripe-Signature` sobre os bytes originais antes de desserializar; limite de corpo; allowlist de rotas públicas ([ADR 0010](decisions/0010-route-access-model.md)); documentação desligada por padrão e autenticada fora de development, headers de segurança e ausência de CORS ([ADR 0016](decisions/0016-http-surface-and-client-identity.md)); rate limiting | Resposta de erro provocada por corpo acima do limite; ataque volumétrico |
 | Pessoa com acesso operacional | Banco, broker, logs e traces | Minimização: payloads fora de logs, traces e mensagens; evento completo apenas no PostgreSQL | Mascaramento por coluna; cifragem em nível de aplicação; auditoria de leitura no banco |
 | Provedor comprometido ou entrega capturada | Injeção de eventos forjados com efeito financeiro | `STRIPE_WEBHOOK_SECRET` como secret; rotação documentada; inbox preserva os bytes recebidos para auditoria posterior | Segunda prova de origem |
 

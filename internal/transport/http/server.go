@@ -9,13 +9,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
-	apispec "github.com/rmotti/payments-boilerplate/api"
+	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/platform/logging"
 	"github.com/rmotti/payments-boilerplate/internal/transport/http/openapi"
-	"github.com/swaggest/swgui/v5emb"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.uber.org/zap"
 )
@@ -41,11 +41,19 @@ const (
 
 type correlationKey struct{}
 
-// Config controls HTTP lifecycle and optional documentation routes.
+// Config controls HTTP lifecycle, the documentation policy and which peers
+// may speak for their clients.
 type Config struct {
 	Address         string
 	ShutdownTimeout time.Duration
-	DocsEnabled     bool
+
+	// Docs is the documentation policy. The zero value registers no
+	// documentation route; see DocsModeFor for how configuration maps to it.
+	Docs DocsMode
+
+	// TrustedProxies are the networks whose X-Forwarded-For header identifies
+	// the client. Empty means the TCP peer is always the client.
+	TrustedProxies []netip.Prefix
 
 	// Listener, when set, is served instead of binding Address. A caller that
 	// already holds an open socket avoids the race of picking a free port and
@@ -61,7 +69,8 @@ type Server struct {
 	shutdownTimeout time.Duration
 }
 
-// New creates an HTTP server with readiness, correlation and telemetry.
+// New creates the API server: every operation of the contract, guarded by
+// API key authentication, plus the documentation routes the policy allows.
 func New(
 	cfg Config,
 	logger *zap.Logger,
@@ -69,35 +78,49 @@ func New(
 	apiKeyVerifier APIKeyVerifier,
 ) *Server {
 	mux := http.NewServeMux()
-	strictHandler := openapi.NewStrictHandlerWithOptions(apiHandler, []openapi.StrictMiddlewareFunc{
+	openapi.HandlerWithOptions(newStrictHandler(logger, apiHandler, apiKeyVerifier), openapi.StdHTTPServerOptions{
+		BaseRouter:       mux,
+		ErrorHandlerFunc: requestErrorHandler,
+	})
+	registerDocs(mux, cfg.Docs, apiKeyVerifier)
+	return newServer(cfg, logger, mux)
+}
+
+// NewHealthOnly creates the server a process without a public API runs. Only
+// GET /health is registered: the other operations of the contract are absent
+// from the mux, so they answer 404 like any unknown path, rather than being
+// registered only to refuse with 401 or 501. Documentation is never served.
+func NewHealthOnly(cfg Config, logger *zap.Logger, healthService *health.Service) *Server {
+	mux := http.NewServeMux()
+	wrapper := openapi.ServerInterfaceWrapper{
+		Handler:          newStrictHandler(logger, NewAPIHandler(healthService, nil, nil, nil), nil),
+		ErrorHandlerFunc: requestErrorHandler,
+	}
+	mux.HandleFunc("GET /health", wrapper.GetHealth)
+	return newServer(cfg, logger, mux)
+}
+
+func newStrictHandler(
+	logger *zap.Logger,
+	apiHandler openapi.StrictServerInterface,
+	apiKeyVerifier APIKeyVerifier,
+) openapi.ServerInterface {
+	return openapi.NewStrictHandlerWithOptions(apiHandler, []openapi.StrictMiddlewareFunc{
 		apiKeyAuthenticationMiddleware(apiKeyVerifier),
 	}, openapi.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  requestErrorHandler,
 		ResponseErrorHandlerFunc: responseErrorHandler(logger),
 	})
-	openapi.HandlerWithOptions(strictHandler, openapi.StdHTTPServerOptions{
-		BaseRouter:       mux,
-		ErrorHandlerFunc: requestErrorHandler,
-	})
+}
 
-	if cfg.DocsEnabled {
-		mux.HandleFunc("GET /openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/yaml")
-			_, _ = w.Write(apispec.OpenAPI)
-		})
-		mux.Handle("GET /docs/", v5emb.New(
-			"Payments Boilerplate API",
-			"/openapi.yaml",
-			"/docs/",
-		))
-		mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "/docs/", http.StatusMovedPermanently)
-		})
-	}
-
+// newServer wraps the routes in the middleware chain shared by every process.
+// Correlation and the security headers sit outermost so that every response,
+// including a 404 from the mux and a 500 from the recovery path, carries them.
+func newServer(cfg Config, logger *zap.Logger, mux *http.ServeMux) *Server {
 	base := accessLogMiddleware(logger, recoveryMiddleware(logger, bodyLimitMiddleware(mux)))
 	instrumented := otelhttp.NewHandler(base, "http.server")
-	handler := correlationMiddleware(instrumented)
+	resolver := NewClientAddressResolver(cfg.TrustedProxies)
+	handler := correlationMiddleware(securityHeadersMiddleware(clientAddressMiddleware(resolver, instrumented)))
 
 	return &Server{
 		server: &http.Server{

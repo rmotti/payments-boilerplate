@@ -136,6 +136,25 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Superfície HTTP fechada. A documentação passa a ser opt-in por `DOCS_ENABLED`,
+  com default `false` em todos os ambientes: sem o opt-in, `/docs`, `/docs/` e
+  `/openapi.yaml` respondem `404` como qualquer caminho inexistente. Em
+  `APP_ENV=development` o opt-in serve a documentação sem credencial; em
+  qualquer outro ambiente ele exige `X-API-Key` válida nas três rotas, decidida
+  antes do redirect e da verificação de método, e o startup registra um warning
+  que nomeia o ambiente e nunca a chave. `.env.example` e o Compose de
+  desenvolvimento ligam a documentação explicitamente. Toda resposta, incluindo
+  `404` e as do recovery, passa a carregar `X-Content-Type-Options`,
+  `Referrer-Policy`, `Cache-Control: no-store`, `X-Frame-Options` e
+  `Content-Security-Policy`; a página do Swagger recebe uma política própria com
+  os scripts inline liberados por hash, validada contra os recursos que o
+  `swgui` realmente serve. CORS permanece desligado. O worker deixa de registrar
+  o strict server completo e publica somente `GET /health`; as demais operações
+  do contrato respondem `404` naquele processo, em vez de `401` ou `501`.
+  `TRUSTED_PROXY_CIDRS` define de quais peers `X-Forwarded-For` é acreditado,
+  com parsing e validação no startup, e a resolução do endereço do cliente
+  ficou centralizada para que o rate limiting a reutilize. Registrado no
+  [ADR 0016](docs/decisions/0016-http-surface-and-client-identity.md).
 - `X-Correlation-ID` passa a fazer parte obrigatória das 33 respostas do
   OpenAPI, com código gerado e handlers alinhados ao contrato.
 - Canal privado de relato de vulnerabilidades habilitado no repositório. O

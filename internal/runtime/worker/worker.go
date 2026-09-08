@@ -211,13 +211,15 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		"postgres": db.Ping,
 		"rabbitmq": broker.Ping,
 	})
-	apiHandler := httpserver.NewAPIHandler(healthService, nil, nil, nil)
-	server := httpserver.New(httpserver.Config{
+	// Only the health route exists on this listener. The rest of the contract
+	// is not registered, so it is not reachable, rather than reachable and
+	// refused. See ADR 0016.
+	server := httpserver.NewHealthOnly(httpserver.Config{
 		Address:         cfg.HTTPAddress,
 		ShutdownTimeout: cfg.ShutdownTimeout,
-		DocsEnabled:     false,
+		TrustedProxies:  cfg.TrustedProxies,
 		Listener:        opts.Listener,
-	}, logger, apiHandler, nil)
+	}, logger, healthService)
 
 	logger.Info("worker starting",
 		zap.String("health_address", cfg.HTTPAddress),
