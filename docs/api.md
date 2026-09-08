@@ -63,6 +63,9 @@ da documentação ficam fora do strict server e seguem a política do
 [ADR 0016](decisions/0016-http-surface-and-client-identity.md), descrita
 adiante.
 
+Autenticação não é limite de uso: toda operação, autenticada ou não, também
+passa pelo controle de taxa descrito em [Limite de requisições](#limite-de-requisições).
+
 Uma chave válida dará acesso aos pedidos da própria instalação. Multi-tenancy,
 login de consumidores e autorização entre organizações permanecem fora do
 contrato da versão `0.1`.
@@ -262,15 +265,65 @@ verificação de método, de modo que nenhuma resposta revela que as rotas exist
 Habilitar a documentação fora de `development` registra um warning no startup,
 que nomeia o ambiente e nunca a chave.
 
+## Limite de requisições
+
+Toda operação é limitada por taxa. A política completa, com o algoritmo e suas
+limitações, está no [ADR 0018](decisions/0018-rate-limiting.md); o que segue é
+o que um integrador precisa saber para consumir a API.
+
+Cada limite é um **burst**, quantas requisições passam em sequência, e o
+**intervalo** em que esse burst se recompõe por inteiro. A taxa sustentada é
+burst por intervalo, e o crédito volta continuamente, um token de cada vez, e
+não de uma só vez no fim da janela.
+
+| Limite | Contado por | Default | Aplica-se a |
+| --- | --- | --- | --- |
+| Grosseiro | Endereço do cliente | 1 200 / min | Negócio, operações, documentação e caminhos desconhecidos, antes de parsing e autenticação |
+| Por credencial | Credencial válida | 600 / min | Rotas de negócio e operacionais |
+| Webhook | Balde global único | 600 / min | `POST /v1/webhooks/stripe`, antes da leitura do corpo |
+| Health | Endereço do cliente | 120 / min | `GET /health`, em balde separado |
+
+As rotas de negócio pagam o limite grosseiro e o por credencial. O primeiro é
+mais largo por padrão, para limitar a origem sem esconder a quota efetiva da
+credencial. Webhook e health não pagam o grosseiro: usam seus baldes dedicados
+na mesma posição externa da cadeia. Assim, o endereço da Stripe nunca decide se
+uma entrega é aceita, e tráfego comum não derruba a probe.
+
+Uma requisição recusada recebe `429` com o envelope de erro comum e o código
+estável `rate_limited`, mais o header `Retry-After` em segundos inteiros:
+
+```json contract operation=createOrder direction=response status=429 name=rate-limited
+{
+  "code": "rate_limited",
+  "message": "too many requests",
+  "correlationId": "6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e"
+}
+```
+
+A resposta não informa qual dos limites foi atingido: dizê-lo confirmaria, a
+quem tentou adivinhar uma chave, que ela é válida. Uma requisição recusada não
+consome crédito, então repetir em laço não afasta o próximo horário permitido —
+mas também não o antecipa. Respeite o `Retry-After`.
+
+Uma credencial inválida nunca cria um balde próprio: essas requisições contam
+apenas no limite grosseiro e continuam recebendo `401`.
+
+Os valores são configuráveis por ambiente (`RATE_LIMIT_*`, documentadas no
+README e em `.env.example`) e podem ser desligados por completo com
+`RATE_LIMIT_ENABLED=false`, para quem já limita na borda. Os limites são **por
+processo**: uma implantação com várias réplicas admite até N vezes os valores
+configurados.
+
 ### Headers de resposta
 
-Toda resposta, inclusive `404` e as geradas pelo recovery, carrega
+Toda resposta, inclusive `404`, `429` e as geradas pelo recovery, carrega
 `X-Correlation-ID`, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer`, `Cache-Control: no-store`,
 `X-Frame-Options: DENY` e uma `Content-Security-Policy`. Respostas JSON e o
 documento OpenAPI usam `default-src 'none'; frame-ancestors 'none'`; a página
 do Swagger recebe uma política própria, com os scripts inline liberados por
-hash. A API não emite headers de CORS.
+hash. Uma resposta `429` acrescenta `Retry-After`. A API não emite headers de
+CORS.
 
 O worker publica somente `GET /health`. As demais operações do contrato não são
 registradas naquele processo e respondem `404`.

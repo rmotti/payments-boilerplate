@@ -221,6 +221,21 @@ a mesma `X-API-Key`. Toda resposta carrega headers de segurança e nenhuma emite
 CORS. O worker publica somente `/health`. `X-Forwarded-For` só é acreditado
 quando o peer pertence a `TRUSTED_PROXY_CIDRS`.
 
+Toda operação é limitada por taxa, com defaults folgados e ligados por padrão.
+São quatro limites: um grosseiro por endereço do cliente para negócio, operações
+e documentação, aplicado antes do parsing e da autenticação; um por credencial
+válida, chaveado por uma impressão HMAC e nunca pela chave em texto puro; um
+balde global aplicado ao webhook antes da leitura do corpo, porque o endereço da
+Stripe não é identidade confiável; e um balde próprio para o health, para que
+tráfego comum não derrube a probe. O default grosseiro (1 200/min) é maior que o
+de credencial (600/min), de modo que a quota do integrador seja efetiva. Uma recusa devolve `429` com o
+envelope de erro comum, `Retry-After` e o código `rate_limited`, sem revelar
+qual limite foi atingido. Os baldes vivem em memória com capacidade e TTL
+limitados, e os limites são por processo: com N réplicas, o teto efetivo é N
+vezes o configurado. Ajuste pelas variáveis `RATE_LIMIT_*` ou desligue com
+`RATE_LIMIT_ENABLED=false` se já limitar na borda; a política completa está no
+[ADR 0018](docs/decisions/0018-rate-limiting.md).
+
 ## Jornada da pessoa desenvolvedora
 
 A pessoa usuária deste projeto é quem desenvolve o sistema que venderá o produto

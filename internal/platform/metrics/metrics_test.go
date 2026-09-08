@@ -234,6 +234,9 @@ func exercise(built *Metrics) {
 	orders.Replayed()
 	orders.Conflicted()
 
+	limits := NewRateLimitObserver(built)
+	limits.Rejected(LimiterClient, RouteClassBusiness)
+
 	// The gauges the samplers own are recorded directly here so the catalogue
 	// check covers them too; their real path has its own test.
 	ctx := context.Background()

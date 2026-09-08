@@ -185,6 +185,8 @@ func handlerContractCases(t *testing.T, orderRequestBody string) []contractCase 
 			handler: func() http.Handler { return newContractHealthHandler(nil) }, requestKind: contracttest.RequestValid},
 		{name: "getHealth/503", operationID: "getHealth", status: 503, request: healthRequest,
 			handler: func() http.Handler { return newContractHealthHandler(errors.New("postgres unavailable")) }, requestKind: contracttest.RequestValid},
+		{name: "getHealth/429", operationID: "getHealth", status: 429, request: healthRequest,
+			handler: exhaustedLimiterHandler, requestKind: contracttest.RequestValid, assert: assertRateLimitedBody},
 
 		{name: "createOrder/201", operationID: "createOrder", status: 201, request: createOrderRequest(true, true),
 			handler: func() http.Handler { return newTestHandler(&stubOrders{order: order}) }, requestKind: contracttest.RequestValid},
@@ -201,6 +203,8 @@ func handlerContractCases(t *testing.T, orderRequestBody string) []contractCase 
 				body := `{"productId":"` + strings.Repeat("a", maxBodyBytes) + `","quantity":1}`
 				return newContractRequest(http.MethodPost, "/v1/orders", body, true, true)
 			}, handler: func() http.Handler { return newTestHandler(&stubOrders{order: order}) }, requestKind: contracttest.RequestInvalid},
+		{name: "createOrder/429", operationID: "createOrder", status: 429, request: createOrderRequest(true, true),
+			handler: exhaustedLimiterHandler, requestKind: contracttest.RequestValid, assert: assertRateLimitedBody},
 		{name: "createOrder/500", operationID: "createOrder", status: 500, request: createOrderRequest(true, true),
 			handler: func() http.Handler { return newTestHandler(&stubOrders{err: errors.New("database unavailable")}) }, requestKind: contracttest.RequestValid},
 
@@ -210,6 +214,8 @@ func handlerContractCases(t *testing.T, orderRequestBody string) []contractCase 
 			handler: func() http.Handler { return newTestHandler(&stubOrders{order: order}) }, requestKind: contracttest.RequestValid},
 		{name: "getOrder/404", operationID: "getOrder", status: 404, request: getOrderRequest(true),
 			handler: func() http.Handler { return newTestHandler(&stubOrders{err: orderapp.ErrOrderNotFound}) }, requestKind: contracttest.RequestValid},
+		{name: "getOrder/429", operationID: "getOrder", status: 429, request: getOrderRequest(true),
+			handler: exhaustedLimiterHandler, requestKind: contracttest.RequestValid, assert: assertRateLimitedBody},
 		{name: "getOrder/500", operationID: "getOrder", status: 500, request: getOrderRequest(true),
 			handler: func() http.Handler { return newTestHandler(&stubOrders{err: errors.New("database unavailable")}) }, requestKind: contracttest.RequestValid},
 
@@ -231,6 +237,8 @@ func handlerContractCases(t *testing.T, orderRequestBody string) []contractCase 
 			handler: func() http.Handler {
 				return newTestHandlerWithCheckout(nil, &stubCheckouts{err: paymentapp.ErrProviderUnavailable})
 			}, requestKind: contracttest.RequestValid},
+		{name: "createCheckout/429", operationID: "createCheckout", status: 429, request: checkoutRequest(true, true),
+			handler: exhaustedLimiterHandler, requestKind: contracttest.RequestValid, assert: assertRateLimitedBody},
 		{name: "createCheckout/500", operationID: "createCheckout", status: 500, request: checkoutRequest(true, true),
 			handler: func() http.Handler {
 				return newTestHandlerWithCheckout(nil, &stubCheckouts{err: errors.New("database unavailable")})
@@ -242,6 +250,8 @@ func handlerContractCases(t *testing.T, orderRequestBody string) []contractCase 
 			handler: operations(event, webhookapp.ErrInvalidLimit), requestKind: contracttest.RequestValid},
 		{name: "listWebhookEvents/401", operationID: "listWebhookEvents", status: 401, request: listRequest(false),
 			handler: operations(event, nil), requestKind: contracttest.RequestValid},
+		{name: "listWebhookEvents/429", operationID: "listWebhookEvents", status: 429, request: listRequest(true),
+			handler: exhaustedLimiterHandler, requestKind: contracttest.RequestValid, assert: assertRateLimitedBody},
 		{name: "listWebhookEvents/500", operationID: "listWebhookEvents", status: 500, request: listRequest(true),
 			handler: operations(event, errors.New("database unavailable")), requestKind: contracttest.RequestValid},
 
@@ -253,6 +263,8 @@ func handlerContractCases(t *testing.T, orderRequestBody string) []contractCase 
 			handler: operations(event, webhookapp.ErrEventNotFound), requestKind: contracttest.RequestValid},
 		{name: "reprocessWebhookEvent/409", operationID: "reprocessWebhookEvent", status: 409, request: reprocessRequest(true),
 			handler: operations(event, webhookapp.ErrEventNotReplayable), requestKind: contracttest.RequestValid},
+		{name: "reprocessWebhookEvent/429", operationID: "reprocessWebhookEvent", status: 429, request: reprocessRequest(true),
+			handler: exhaustedLimiterHandler, requestKind: contracttest.RequestValid, assert: assertRateLimitedBody},
 		{name: "reprocessWebhookEvent/500", operationID: "reprocessWebhookEvent", status: 500, request: reprocessRequest(true),
 			handler: operations(event, errors.New("database unavailable")), requestKind: contracttest.RequestValid},
 
@@ -268,6 +280,8 @@ func handlerContractCases(t *testing.T, orderRequestBody string) []contractCase 
 			handler: func() http.Handler {
 				return newTestHandlerWith(nil, nil, &stubWebhooks{err: webhookapp.ErrInvalidSignature})
 			}, requestKind: contracttest.RequestValid},
+		{name: "receiveStripeWebhook/429", operationID: "receiveStripeWebhook", status: 429, request: webhookRequest,
+			handler: exhaustedLimiterHandler, requestKind: contracttest.RequestValid, assert: assertRateLimitedBody},
 		{name: "receiveStripeWebhook/500", operationID: "receiveStripeWebhook", status: 500, request: webhookRequest,
 			handler: func() http.Handler {
 				return newTestHandlerWith(nil, nil, &stubWebhooks{err: errors.New("database unavailable")})
@@ -289,6 +303,9 @@ func newContractRequest(method, path, body string, authenticated, idempotent boo
 	if idempotent {
 		request.Header.Set("Idempotency-Key", "contract-key")
 	}
+	// Give middleware-level contract cases a real client identity. Production
+	// requests always have RemoteAddr; http.NewRequest leaves it empty.
+	request.RemoteAddr = "192.0.2.1:1234"
 	return request
 }
 
@@ -312,6 +329,39 @@ func (panicOrders) Create(context.Context, orderapp.CreateInput) (orderdomain.Or
 
 func (panicOrders) Get(context.Context, string) (orderdomain.Order, error) {
 	panic("contract recovery probe")
+}
+
+// exhaustedLimiterHandler builds the real server with every limit already
+// spent, so a 429 is produced by the middleware chain the process runs rather
+// than by a stub standing in for it.
+func exhaustedLimiterHandler() http.Handler {
+	return newRateLimitedTestHandler()
+}
+
+// assertRateLimitedBody checks that the refusal says only what it is allowed
+// to. Which bucket ran out, the address and the credential are all absent:
+// naming them would confirm to a caller that guessed a key that it is valid.
+func assertRateLimitedBody(t *testing.T, body []byte) {
+	t.Helper()
+	var payload struct {
+		Code          string `json:"code"`
+		Message       string `json:"message"`
+		CorrelationID string `json:"correlationId"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode rate limited response: %v", err)
+	}
+	if payload.Code != codeRateLimited {
+		t.Errorf("code = %q, want %q", payload.Code, codeRateLimited)
+	}
+	if payload.CorrelationID == "" {
+		t.Error("rate limited response carries no correlation id")
+	}
+	for _, forbidden := range []string{testAPIKey, "127.0.0.1", "client", "credential", "webhook"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Errorf("rate limited response leaks %q", forbidden)
+		}
+	}
 }
 
 func assertNoProviderPayload(t *testing.T, body []byte) {
@@ -465,16 +515,19 @@ func markdownContractSchema(document *openapi3.T, example contracttest.MarkdownE
 }
 
 func contractCoverageManifest() []contracttest.CoverageEntry {
+	// Every operation that declares 429 owns a handler contract case for it.
+	// ValidateManifest requires the exact operation/status set of the spec, so
+	// a 429 added to one more operation fails here until it is proven too.
 	statuses := map[string][]int{
-		"getHealth":             {200, 503},
-		"createOrder":           {201, 400, 401, 404, 409, 413, 500},
-		"getOrder":              {200, 401, 404, 500},
-		"createCheckout":        {201, 400, 401, 404, 409, 502, 500},
-		"listWebhookEvents":     {200, 400, 401, 500},
-		"reprocessWebhookEvent": {202, 401, 404, 409, 500},
-		"receiveStripeWebhook":  {200, 202, 400, 500},
+		"getHealth":             {200, 429, 503},
+		"createOrder":           {201, 400, 401, 404, 409, 413, 429, 500},
+		"getOrder":              {200, 401, 404, 429, 500},
+		"createCheckout":        {201, 400, 401, 404, 409, 429, 502, 500},
+		"listWebhookEvents":     {200, 400, 401, 429, 500},
+		"reprocessWebhookEvent": {202, 401, 404, 409, 429, 500},
+		"receiveStripeWebhook":  {200, 202, 400, 429, 500},
 	}
-	entries := make([]contracttest.CoverageEntry, 0, 33)
+	entries := make([]contracttest.CoverageEntry, 0, 40)
 	for operationID, operationStatuses := range statuses {
 		for _, status := range operationStatuses {
 			entries = append(entries, contracttest.CoverageEntry{

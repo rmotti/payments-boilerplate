@@ -194,3 +194,120 @@ func TestLoadRejectsInvalidTrustedProxyCIDRs(t *testing.T) {
 		})
 	}
 }
+
+// Rate limiting is on by default with values a legitimate integrator will not
+// notice. The defaults are asserted because "safe by default" is a promise the
+// project makes to whoever clones it without reading every variable.
+func TestLoadEnablesRateLimitingWithSafeDefaults(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+
+	cfg, err := Load("payments-api", ":8080", false)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	policy := cfg.RateLimitPolicy()
+	if !policy.Enabled {
+		t.Fatal("rate limiting is not enabled by default")
+	}
+	checks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"client burst", policy.ClientBurst, 1200},
+		{"client interval", policy.ClientInterval, time.Minute},
+		{"client capacity", policy.ClientCapacity, 10000},
+		{"credential burst", policy.CredentialBurst, 600},
+		{"credential interval", policy.CredentialInterval, time.Minute},
+		{"credential capacity", policy.CredentialCapacity, 64},
+		{"webhook burst", policy.WebhookBurst, 600},
+		{"webhook interval", policy.WebhookInterval, time.Minute},
+		{"health burst", policy.HealthBurst, 120},
+		{"health interval", policy.HealthInterval, time.Minute},
+		{"health capacity", policy.HealthCapacity, 1000},
+		{"idle TTL", policy.IdleTTL, 10 * time.Minute},
+	}
+	for _, check := range checks {
+		if check.got != check.want {
+			t.Errorf("%s = %v, want %v", check.name, check.got, check.want)
+		}
+	}
+}
+
+func TestLoadOverridesRateLimitsFromTheEnvironment(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example")
+	t.Setenv("RATE_LIMIT_ENABLED", "false")
+	t.Setenv("RATE_LIMIT_CLIENT_BURST", "10")
+	t.Setenv("RATE_LIMIT_CLIENT_INTERVAL", "30s")
+	t.Setenv("RATE_LIMIT_CLIENT_CAPACITY", "500")
+	t.Setenv("RATE_LIMIT_IDLE_TTL", "5m")
+
+	cfg, err := Load("payments-api", ":8080", false)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	policy := cfg.RateLimitPolicy()
+	if policy.Enabled {
+		t.Error("RATE_LIMIT_ENABLED=false did not disable rate limiting")
+	}
+	if policy.ClientBurst != 10 || policy.ClientInterval != 30*time.Second {
+		t.Errorf("client policy = %d per %s, want 10 per 30s", policy.ClientBurst, policy.ClientInterval)
+	}
+	if policy.ClientCapacity != 500 {
+		t.Errorf("client capacity = %d, want 500", policy.ClientCapacity)
+	}
+	if policy.IdleTTL != 5*time.Minute {
+		t.Errorf("idle TTL = %s, want 5m", policy.IdleTTL)
+	}
+}
+
+// A bad limit must stop the process at startup rather than at the first
+// request, and it must do so whether or not limiting is currently enabled: a
+// deployment that turns it on later should have found the typo already.
+func TestLoadRejectsInvalidRateLimits(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		enabled string
+	}{
+		{name: "zero client burst", env: map[string]string{"RATE_LIMIT_CLIENT_BURST": "0"}},
+		{name: "negative client burst", env: map[string]string{"RATE_LIMIT_CLIENT_BURST": "-1"}},
+		{name: "zero client interval", env: map[string]string{"RATE_LIMIT_CLIENT_INTERVAL": "0s"}},
+		{name: "zero credential burst", env: map[string]string{"RATE_LIMIT_CREDENTIAL_BURST": "0"}},
+		{name: "zero webhook interval", env: map[string]string{"RATE_LIMIT_WEBHOOK_INTERVAL": "0s"}},
+		{name: "zero health burst", env: map[string]string{"RATE_LIMIT_HEALTH_BURST": "0"}},
+		{name: "zero client capacity", env: map[string]string{"RATE_LIMIT_CLIENT_CAPACITY": "0"}},
+		{name: "zero credential capacity", env: map[string]string{"RATE_LIMIT_CREDENTIAL_CAPACITY": "0"}},
+		{name: "zero health capacity", env: map[string]string{"RATE_LIMIT_HEALTH_CAPACITY": "0"}},
+		{name: "negative idle TTL", env: map[string]string{"RATE_LIMIT_IDLE_TTL": "-1m"}},
+		{
+			name: "idle TTL shorter than a refill window",
+			env:  map[string]string{"RATE_LIMIT_IDLE_TTL": "10s", "RATE_LIMIT_CLIENT_INTERVAL": "1m"},
+		},
+		{
+			name: "interval too short to refill the burst",
+			env:  map[string]string{"RATE_LIMIT_CLIENT_BURST": "1000000000", "RATE_LIMIT_CLIENT_INTERVAL": "1ns"},
+		},
+		{
+			name:    "validated even while disabled",
+			env:     map[string]string{"RATE_LIMIT_CLIENT_BURST": "0"},
+			enabled: "false",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://example")
+			if test.enabled != "" {
+				t.Setenv("RATE_LIMIT_ENABLED", test.enabled)
+			}
+			for name, value := range test.env {
+				t.Setenv(name, value)
+			}
+			if _, err := Load("payments-api", ":8080", false); err == nil {
+				t.Fatal("Load() accepted an invalid rate limit configuration")
+			}
+		})
+	}
+}

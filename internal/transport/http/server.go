@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rmotti/payments-boilerplate/internal/platform/errsanitize"
 	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/platform/logging"
 	"github.com/rmotti/payments-boilerplate/internal/transport/http/openapi"
@@ -30,6 +31,10 @@ const (
 	// webhookPath is the one route whose body is not written by the
 	// integrator, so its size is not ours to keep small.
 	webhookPath = "/v1/webhooks/stripe"
+
+	// healthPath is the probe. The rate limiting policy gives it a bucket of
+	// its own so ordinary traffic cannot make a deployment look unhealthy.
+	healthPath = "/health"
 
 	// webhookMaxBodyBytes gives provider events their own headroom. An event
 	// rejected for size cannot have its signature verified, and treating that
@@ -55,6 +60,10 @@ type Config struct {
 	// the client. Empty means the TCP peer is always the client.
 	TrustedProxies []netip.Prefix
 
+	// RateLimit is the rate limiting policy. A zero value, whose Enabled is
+	// false, builds a server with no limiter at all.
+	RateLimit RateLimitConfig
+
 	// Listener, when set, is served instead of binding Address. A caller that
 	// already holds an open socket avoids the race of picking a free port and
 	// then trying to bind it again, which is what lets a test on port zero
@@ -71,19 +80,52 @@ type Server struct {
 
 // New creates the API server: every operation of the contract, guarded by
 // API key authentication, plus the documentation routes the policy allows.
+//
+// It panics on an invalid rate limiting policy, which cannot happen through
+// the binaries: configuration is validated at load, long before this point.
+// NewWithRateLimits is the form that returns the error instead.
 func New(
 	cfg Config,
 	logger *zap.Logger,
 	apiHandler openapi.StrictServerInterface,
 	apiKeyVerifier APIKeyVerifier,
 ) *Server {
+	fingerprinter, _ := apiKeyVerifier.(CredentialFingerprinter)
+	server, err := NewWithRateLimits(cfg, logger, apiHandler, apiKeyVerifier, fingerprinter, nil)
+	if err != nil {
+		panic("httpserver: invalid rate limit configuration: " + err.Error())
+	}
+	return server
+}
+
+// NewWithRateLimits creates the API server with rate limiting wired in.
+//
+// The fingerprinter is what lets an authenticated operation be counted per
+// credential without this package ever handling a key: it answers only for
+// credentials that are actually configured. It is required when rate limiting
+// is enabled. The observer records refusals and may be nil when metrics are not
+// needed by the caller.
+func NewWithRateLimits(
+	cfg Config,
+	logger *zap.Logger,
+	apiHandler openapi.StrictServerInterface,
+	apiKeyVerifier APIKeyVerifier,
+	fingerprinter CredentialFingerprinter,
+	observer RateLimitObserver,
+) (*Server, error) {
+	limiters, err := newRateLimiters(cfg.RateLimit, fingerprinter, observer)
+	if err != nil {
+		return nil, err
+	}
 	mux := http.NewServeMux()
-	openapi.HandlerWithOptions(newStrictHandler(logger, apiHandler, apiKeyVerifier), openapi.StdHTTPServerOptions{
-		BaseRouter:       mux,
-		ErrorHandlerFunc: requestErrorHandler,
-	})
+	openapi.HandlerWithOptions(
+		newStrictHandler(logger, apiHandler, apiKeyVerifier, limiters),
+		openapi.StdHTTPServerOptions{
+			BaseRouter:       mux,
+			ErrorHandlerFunc: requestErrorHandler,
+		})
 	registerDocs(mux, cfg.Docs, apiKeyVerifier)
-	return newServer(cfg, logger, mux)
+	return newServer(cfg, logger, mux, limiters), nil
 }
 
 // NewHealthOnly creates the server a process without a public API runs. Only
@@ -93,20 +135,31 @@ func New(
 func NewHealthOnly(cfg Config, logger *zap.Logger, healthService *health.Service) *Server {
 	mux := http.NewServeMux()
 	wrapper := openapi.ServerInterfaceWrapper{
-		Handler:          newStrictHandler(logger, NewAPIHandler(healthService, nil, nil, nil), nil),
+		Handler:          newStrictHandler(logger, NewAPIHandler(healthService, nil, nil, nil), nil, nil),
 		ErrorHandlerFunc: requestErrorHandler,
 	}
 	mux.HandleFunc("GET /health", wrapper.GetHealth)
-	return newServer(cfg, logger, mux)
+	// The worker serves only the probe, so it carries no limiter: the health
+	// bucket exists to keep other traffic from starving probes, and there is
+	// no other traffic here.
+	return newServer(cfg, logger, mux, nil)
 }
 
+// newStrictHandler orders the two strict middlewares deliberately. The
+// generated wrapper applies them in reverse, so listing rate limiting last
+// makes it the outermost of the pair: a request over its credential limit is
+// refused before the credential is compared again and before the handler runs.
+// Only a credential the fingerprinter already recognizes ever reaches a bucket,
+// so nothing here weakens the authentication that follows it.
 func newStrictHandler(
 	logger *zap.Logger,
 	apiHandler openapi.StrictServerInterface,
 	apiKeyVerifier APIKeyVerifier,
+	limiters *rateLimiters,
 ) openapi.ServerInterface {
 	return openapi.NewStrictHandlerWithOptions(apiHandler, []openapi.StrictMiddlewareFunc{
 		apiKeyAuthenticationMiddleware(apiKeyVerifier),
+		operationRateLimitMiddleware(limiters),
 	}, openapi.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  requestErrorHandler,
 		ResponseErrorHandlerFunc: responseErrorHandler(logger),
@@ -116,11 +169,18 @@ func newStrictHandler(
 // newServer wraps the routes in the middleware chain shared by every process.
 // Correlation and the security headers sit outermost so that every response,
 // including a 404 from the mux and a 500 from the recovery path, carries them.
-func newServer(cfg Config, logger *zap.Logger, mux *http.ServeMux) *Server {
+// The pre-routing limiter sits directly inside client address resolution and
+// outside everything else: routing, the body limit, OpenAPI decode and
+// authentication all happen after it. Business and documentation routes use
+// the coarse address bucket, health uses its dedicated address bucket, and the
+// webhook uses its global provider bucket. A refusal therefore costs one lookup
+// rather than a parse and a credential comparison.
+func newServer(cfg Config, logger *zap.Logger, mux *http.ServeMux, limiters *rateLimiters) *Server {
 	base := accessLogMiddleware(logger, recoveryMiddleware(logger, bodyLimitMiddleware(mux)))
 	instrumented := otelhttp.NewHandler(base, "http.server")
+	limited := clientRateLimitMiddleware(limiters, instrumented)
 	resolver := NewClientAddressResolver(cfg.TrustedProxies)
-	handler := correlationMiddleware(securityHeadersMiddleware(clientAddressMiddleware(resolver, instrumented)))
+	handler := correlationMiddleware(securityHeadersMiddleware(clientAddressMiddleware(resolver, limited)))
 
 	return &Server{
 		server: &http.Server{
@@ -211,8 +271,12 @@ func recoveryMiddleware(logger *zap.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
+				// recovered can be anything a panic carried, including a formatted
+				// string built from a driver or client error; its text is
+				// sanitized the same way a logged error is, rather than trusted
+				// because it happens to not be an error value.
 				logging.WithTrace(r.Context(), logger).Error("http handler panic",
-					zap.Any("panic", recovered),
+					zap.String("panic", errsanitize.Sanitize(fmt.Sprint(recovered))),
 					zap.String("correlation_id", correlationIDFromContext(r.Context())),
 				)
 				writeError(w, r, http.StatusInternalServerError, codeInternalError, "internal error")
@@ -256,6 +320,11 @@ func requestErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 // id and the client receives only a generic body.
 func responseErrorHandler(logger *zap.Logger) func(w http.ResponseWriter, r *http.Request, err error) {
 	return func(w http.ResponseWriter, r *http.Request, err error) {
+		var limited rateLimitedError
+		if errors.As(err, &limited) {
+			writeRateLimited(w, r, limited.retryAfter)
+			return
+		}
 		if errors.Is(err, ErrUnauthorized) {
 			writeError(w, r, http.StatusUnauthorized, codeUnauthorized, ErrUnauthorized.Error())
 			return
@@ -265,7 +334,7 @@ func responseErrorHandler(logger *zap.Logger) func(w http.ResponseWriter, r *htt
 			return
 		}
 		logging.WithTrace(r.Context(), logger).Error("http handler failed",
-			zap.Error(err),
+			logging.SanitizedError(err),
 			zap.String("method", r.Method),
 			zap.String("path", r.URL.Path),
 			zap.String("correlation_id", correlationIDFromContext(r.Context())),

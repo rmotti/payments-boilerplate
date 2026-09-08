@@ -295,14 +295,14 @@ func containsSeries(got []string, want string) bool {
 // fast so a scenario measured in seconds still sees several rounds.
 func newMetricsHarness(t *testing.T, collector *otlpCollector) *harness {
 	t.Helper()
-	previous := metricsRuntimeOverrides
-	metricsRuntimeOverrides = func(cfg *config.Config) {
+	previous := runtimeOverrides
+	runtimeOverrides = func(cfg *config.Config) {
 		cfg.OTelEnabled = true
 		cfg.OTelExporterEndpoint = collector.endpoint
 		cfg.OTelExportInterval = 500 * time.Millisecond
 		cfg.MetricsSampleInterval = 500 * time.Millisecond
 		cfg.MetricsSampleTimeout = 250 * time.Millisecond
 	}
-	t.Cleanup(func() { metricsRuntimeOverrides = previous })
+	t.Cleanup(func() { runtimeOverrides = previous })
 	return newHarness(t, true)
 }

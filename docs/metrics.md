@@ -42,6 +42,24 @@ permitida viram `other`. Um teste falha se uma instrumentação violar isso.
 | Instrumento | Tipo | Unidade | Labels | O que mede |
 | --- | --- | --- | --- | --- |
 | `http.server.request.duration` | histogram | `s` | — | Duração das requisições, pelo `otelhttp`. |
+| `http.server.rate_limited` | counter | `{request}` | `limiter`, `route.class` | Requisições recusadas com `429`, por limitador e classe de rota. |
+
+`limiter` diz qual balde se esgotou: `client` (grosseiro, por endereço, para
+negócio, operações, documentação e caminhos desconhecidos),
+`credential` (por credencial válida), `webhook` (balde global do provedor) ou
+`health` (balde próprio da probe).
+`route.class` agrupa as operações em `health`, `docs`, `business`, `operations`
+e `webhook`. Os dois são vocabulários fechados: endereço, impressão da
+credencial, chave de API e caminho HTTP nunca viram label, então o número de
+séries é fixo e não cresce com o número de chamadores. A política está no
+[ADR 0018](decisions/0018-rate-limiting.md).
+
+Um `client` subindo concentrado é abuso ou um cliente mal comportado; um
+`credential` subindo costuma ser um laço no backend do integrador, e é o sinal
+que chega antes de a cota da Stripe acabar. `webhook` acima de zero merece
+atenção imediata: a Stripe está sendo recusada e vai reentregar. `health` acima
+de zero significa que a probe está sendo recusada, e uma réplica saudável pode
+sair de rotação por isso.
 
 ### Recepção de webhook
 

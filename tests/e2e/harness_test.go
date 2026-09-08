@@ -133,16 +133,17 @@ func repositoryRoot(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
 }
 
-// metricsRuntimeOverrides lets one scenario adjust the configuration every
-// process is started with. It exists for the metrics suite, which needs OTLP
-// export enabled and fast sampling; every other scenario leaves it nil and
-// gets the configuration above unchanged.
-var metricsRuntimeOverrides func(*config.Config)
+// runtimeOverrides lets one scenario adjust the configuration every process is
+// started with. The metrics suite needs OTLP export and fast sampling; the
+// rate limiting suite needs a limit small enough to reach over real HTTP.
+// Every other scenario leaves it nil and gets the configuration above
+// unchanged.
+var runtimeOverrides func(*config.Config)
 
 func (h *harness) runtimeConfig(service, address string) config.Config {
 	cfg := h.baseRuntimeConfig(service, address)
-	if metricsRuntimeOverrides != nil {
-		metricsRuntimeOverrides(&cfg)
+	if runtimeOverrides != nil {
+		runtimeOverrides(&cfg)
 	}
 	return cfg
 }
@@ -161,6 +162,23 @@ func (h *harness) baseRuntimeConfig(service, address string) config.Config {
 		OutboxBackoffMax: 100 * time.Millisecond, OutboxAlertAfterAttempts: 3,
 		ConsumerConcurrency: 2, ConsumerPrefetch: 2, ConsumerMaxAttempts: 2,
 		ConsumerRetryDelays: []time.Duration{100 * time.Millisecond, 250 * time.Millisecond},
+		// Rate limiting is on here, as it is in the binaries, so the end-to-end
+		// runs exercise the same middleware chain a deployment has. The limits
+		// are the production defaults: high enough that no scenario below
+		// trips them by accident, and real enough that one scenario can.
+		RateLimitEnabled:            true,
+		RateLimitClientBurst:        1200,
+		RateLimitClientInterval:     time.Minute,
+		RateLimitClientCapacity:     10000,
+		RateLimitCredentialBurst:    600,
+		RateLimitCredentialInterval: time.Minute,
+		RateLimitCredentialCapacity: 64,
+		RateLimitWebhookBurst:       600,
+		RateLimitWebhookInterval:    time.Minute,
+		RateLimitHealthBurst:        120,
+		RateLimitHealthInterval:     time.Minute,
+		RateLimitHealthCapacity:     1000,
+		RateLimitIdleTTL:            10 * time.Minute,
 	}
 }
 

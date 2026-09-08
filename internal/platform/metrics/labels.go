@@ -23,6 +23,8 @@ const (
 	LabelQueue       = "queue"
 	LabelState       = "state"
 	LabelSampler     = "sampler"
+	LabelLimiter     = "limiter"
+	LabelRouteClass  = "route.class"
 )
 
 // Other is the value every unrecognized input collapses to. Cardinality is a
@@ -66,7 +68,37 @@ var allowed = map[string]map[string]struct{}{
 	LabelDestination: set("retry", "dead_letter"),
 	LabelState:       set("in_use", "idle"),
 	LabelSampler:     set(SamplerBacklog, SamplerBroker),
+	// Rate limiting labels. Both are closed vocabularies chosen so a rejection
+	// can be attributed to a limiter and a class of route without ever
+	// carrying an address, a credential fingerprint or a request path.
+	LabelLimiter:    set(LimiterClient, LimiterCredential, LimiterWebhook, LimiterHealth),
+	LabelRouteClass: set(RouteClassHealth, RouteClassDocs, RouteClassBusiness, RouteClassOperations, RouteClassWebhook),
 }
+
+// Limiter values name which limiter refused a request.
+const (
+	// LimiterClient is the coarse limiter keyed by the resolved client
+	// address, applied before parsing and authentication.
+	LimiterClient = "client"
+	// LimiterCredential is the limiter keyed by the fingerprint of a valid
+	// credential, applied to authenticated operations.
+	LimiterCredential = "credential"
+	// LimiterWebhook is the single global bucket the provider endpoint shares.
+	LimiterWebhook = "webhook"
+	// LimiterHealth is the probe's own address-keyed bucket, separate from the
+	// coarse one so a starved probe is distinguishable from throttled traffic.
+	LimiterHealth = "health"
+)
+
+// Route class values group operations by the policy that applies to them. A
+// class rather than a path keeps the series count fixed as the contract grows.
+const (
+	RouteClassHealth     = "health"
+	RouteClassDocs       = "docs"
+	RouteClassBusiness   = "business"
+	RouteClassOperations = "operations"
+	RouteClassWebhook    = "webhook"
+)
 
 // statuses lists every order, payment and attempt state a transition may name.
 // Order and payment vocabularies overlap, so one set covers both ends of a

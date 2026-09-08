@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -82,4 +83,24 @@ func (v *APIKeyVerifier) tag(value string) [sha256.Size]byte {
 	var tag [sha256.Size]byte
 	copy(tag[:], mac.Sum(nil))
 	return tag
+}
+
+// Fingerprint returns a stable, opaque identifier for a valid credential, and
+// false for one that is not configured.
+//
+// It exists so a rate limiter can count per credential without ever handling
+// the key itself. The value is the same HMAC tag the verifier already compares
+// against, hex encoded: derived with a secret generated at startup, so it is
+// unique to this process, cannot be correlated across restarts or replicas,
+// and is not reversible to the key even if it were to escape.
+//
+// Refusing to fingerprint an unknown credential is the point rather than a
+// detail: it is what stops an unauthenticated caller from minting a fresh
+// bucket per made-up header value.
+func (v *APIKeyVerifier) Fingerprint(candidate string) (string, bool) {
+	if !v.Valid(candidate) {
+		return "", false
+	}
+	tag := v.tag(candidate)
+	return hex.EncodeToString(tag[:]), true
 }

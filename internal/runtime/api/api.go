@@ -25,6 +25,7 @@ import (
 	"github.com/rmotti/payments-boilerplate/internal/platform/health"
 	"github.com/rmotti/payments-boilerplate/internal/platform/logging"
 	"github.com/rmotti/payments-boilerplate/internal/platform/metrics"
+	"github.com/rmotti/payments-boilerplate/internal/platform/ratelimit"
 	"github.com/rmotti/payments-boilerplate/internal/platform/retry"
 	"github.com/rmotti/payments-boilerplate/internal/platform/telemetry"
 	httpserver "github.com/rmotti/payments-boilerplate/internal/transport/http"
@@ -96,7 +97,7 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
 		if err := shutdownTelemetry(shutdownCtx); err != nil {
-			logger.Error("telemetry shutdown failed", zap.Error(err))
+			logger.Error("telemetry shutdown failed", logging.SanitizedError(err))
 		}
 	}()
 
@@ -121,7 +122,7 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			logger.Error("postgres shutdown failed", zap.Error(err))
+			logger.Error("postgres shutdown failed", logging.SanitizedError(err))
 		}
 	}()
 
@@ -162,13 +163,22 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		logger.Warn("api documentation enabled outside development; /docs and /openapi.yaml require a valid X-API-Key",
 			zap.String("environment", cfg.Environment))
 	}
-	server := httpserver.New(httpserver.Config{
+	// The verifier is passed twice, in two roles. As an APIKeyVerifier it
+	// authenticates; as a CredentialFingerprinter it names a valid credential
+	// for the rate limiter without the limiter ever seeing a key. Both read
+	// the same process-local HMAC secret, so the fingerprint is stable within
+	// this process and meaningless outside it.
+	server, err := httpserver.NewWithRateLimits(httpserver.Config{
 		Address:         cfg.HTTPAddress,
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		Docs:            docsMode,
 		TrustedProxies:  cfg.TrustedProxies,
+		RateLimit:       rateLimitConfig(cfg.RateLimitPolicy()),
 		Listener:        opts.Listener,
-	}, logger, apiHandler, apiKeyVerifier)
+	}, logger, apiHandler, apiKeyVerifier, apiKeyVerifier, metrics.NewRateLimitObserver(appMetrics))
+	if err != nil {
+		return fmt.Errorf("configure rate limiting: %w", err)
+	}
 
 	logger.Info("api starting",
 		zap.String("address", cfg.HTTPAddress),
@@ -176,6 +186,21 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		zap.String("commit", buildinfo.Commit),
 	)
 	return server.Run(ctx)
+}
+
+// rateLimitConfig maps the validated configuration onto the transport policy.
+func rateLimitConfig(policy config.RateLimitPolicy) httpserver.RateLimitConfig {
+	return httpserver.RateLimitConfig{
+		Enabled:            policy.Enabled,
+		Client:             ratelimit.Policy{Burst: policy.ClientBurst, Interval: policy.ClientInterval},
+		ClientCapacity:     policy.ClientCapacity,
+		Credential:         ratelimit.Policy{Burst: policy.CredentialBurst, Interval: policy.CredentialInterval},
+		CredentialCapacity: policy.CredentialCapacity,
+		Webhook:            ratelimit.Policy{Burst: policy.WebhookBurst, Interval: policy.WebhookInterval},
+		Health:             ratelimit.Policy{Burst: policy.HealthBurst, Interval: policy.HealthInterval},
+		HealthCapacity:     policy.HealthCapacity,
+		IdleTTL:            policy.IdleTTL,
+	}
 }
 
 // validateStripeConfiguration follows the same boundary as Options: replacing

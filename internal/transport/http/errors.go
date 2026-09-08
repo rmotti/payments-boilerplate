@@ -21,6 +21,7 @@ const (
 	codeProviderUnavailable       = "provider_unavailable"
 	codeWebhookEventNotFound      = "webhook_event_not_found"
 	codeWebhookEventNotReplayable = "webhook_event_not_replayable"
+	codeRateLimited               = "rate_limited"
 	codeNotImplemented            = "not_implemented"
 	codeInternalError             = "internal_error"
 )

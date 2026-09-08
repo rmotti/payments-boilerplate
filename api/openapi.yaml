@@ -31,6 +31,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /v1/orders:
     post:
       operationId: createOrder
@@ -134,6 +136,8 @@ paths:
                     code: invalid_request
                     message: request body too large
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           description: Falha inesperada ao criar o pedido.
           headers: *correlationResponseHeaders
@@ -176,6 +180,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           description: Falha inesperada ao consultar o pedido.
           headers: *correlationResponseHeaders
@@ -238,6 +244,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           description: Falha inesperada ao iniciar o checkout.
           headers: *correlationResponseHeaders
@@ -289,6 +297,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           description: Falha inesperada ao consultar os eventos.
           headers: *correlationResponseHeaders
@@ -337,6 +347,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           description: Falha inesperada ao reenfileirar o evento.
           headers: *correlationResponseHeaders
@@ -418,6 +430,8 @@ paths:
                     code: invalid_signature
                     message: webhook signature could not be verified
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           description: |
             O evento nao pode ser registrado. Devolvido tambem quando o corpo
@@ -435,6 +449,27 @@ paths:
                     message: internal error
                     correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
 components:
+  responses:
+    TooManyRequests:
+      description: |
+        Limite de requisicoes excedido. O header Retry-After informa, em
+        segundos, quando uma nova tentativa pode ser feita. A resposta nao
+        revela qual limite foi atingido.
+      headers:
+        X-Correlation-ID:
+          $ref: "#/components/headers/CorrelationId"
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            rateLimited:
+              value:
+                code: rate_limited
+                message: too many requests
+                correlationId: 6f1d2c0a4b8e4f6c9d1e2f3a4b5c6d7e
   headers:
     CorrelationId:
       description: Identificador opaco que correlaciona a resposta aos logs da requisicao.
@@ -443,6 +478,13 @@ components:
         type: string
         minLength: 1
         maxLength: 128
+    RetryAfter:
+      description: Segundos a esperar antes de repetir a requisicao.
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+      example: 60
   securitySchemes:
     integrationApiKey:
       type: apiKey

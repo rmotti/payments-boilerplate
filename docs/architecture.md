@@ -155,6 +155,15 @@ controles de borda continuam sob responsabilidade de quem implanta o projeto.
 O modelo completo está no
 [ADR 0016](decisions/0016-http-surface-and-client-identity.md).
 
+Toda operação também passa por rate limiting, aplicado antes do parsing, da
+autenticação e do handler. Negócio, operações e documentação usam um limitador
+grosseiro chaveado pelo mesmo endereço que aquele ADR resolve; as operações
+autenticadas somam um limite por impressão criptográfica da credencial. Webhook
+e health usam baldes próprios nessa camada externa, sendo o primeiro global para
+que o endereço da Stripe nunca funcione como identidade. Os baldes são
+token buckets em memória, com capacidade e TTL limitados, e valem por processo.
+A política está no [ADR 0018](decisions/0018-rate-limiting.md).
+
 O modelo completo, alternativas e limitações estão no
 [ADR 0010](decisions/0010-route-access-model.md).
 

@@ -302,3 +302,28 @@ var (
 	_ consumerapp.Observer         = ConsumerObserver{}
 	_ consumerapp.HandlingObserver = ConsumerObserver{}
 )
+
+// RateLimitObserver records requests the HTTP boundary refused with 429.
+//
+// It takes two already-classified strings rather than a request, which is what
+// keeps the identity out of the metric: the transport layer knows the client
+// address and the credential fingerprint, and neither reaches this package.
+// What is recorded is which limiter refused and which class of route it
+// guards, both closed vocabularies, so the series count is fixed no matter how
+// many callers or paths the deployment has.
+type RateLimitObserver struct{ metrics *Metrics }
+
+// NewRateLimitObserver binds the HTTP rate limiters to their instrument.
+func NewRateLimitObserver(metrics *Metrics) RateLimitObserver {
+	return RateLimitObserver{metrics: metrics}
+}
+
+// Rejected records one refused request.
+func (o RateLimitObserver) Rejected(limiter, routeClass string) {
+	if o.metrics == nil {
+		return
+	}
+	o.metrics.add(context.Background(), HTTPRateLimited, 1,
+		Attr(LabelLimiter, limiter),
+		Attr(LabelRouteClass, routeClass))
+}

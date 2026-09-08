@@ -83,6 +83,8 @@ const (
 
 	SamplerAge      = "metrics.sampler.age"
 	SamplerFailures = "metrics.sampler.failures"
+
+	HTTPRateLimited = "http.server.rate_limited"
 )
 
 // catalogue is the single definition of every instrument this package
@@ -195,6 +197,10 @@ var catalogue = []Instrument{
 	{Name: SamplerFailures, Kind: KindObservableCounter, Unit: "{sample}",
 		Description: "Background sample attempts that failed or timed out.",
 		Labels:      []string{LabelSampler}},
+
+	{Name: HTTPRateLimited, Kind: KindCounter, Unit: "{request}",
+		Description: "Requests refused with 429 by a rate limiter, by limiter and route class.",
+		Labels:      []string{LabelLimiter, LabelRouteClass}},
 }
 
 // Catalogue returns a copy of every instrument this package creates.
