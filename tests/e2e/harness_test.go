@@ -224,7 +224,8 @@ func (h *harness) startWorker() {
 
 func (h *harness) waitHTTPReady(endpoint string) {
 	h.t.Helper()
-	client := &http.Client{Timeout: 500 * time.Millisecond}
+	client := newE2EHTTPClient(500 * time.Millisecond)
+	defer client.CloseIdleConnections()
 	h.poll("HTTP readiness for "+endpoint, func() (bool, string, error) {
 		request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, nil)
 		response, err := client.Do(request)
@@ -340,7 +341,9 @@ func (h *harness) request(method, path, key string, body any, headers map[string
 			h.t.Fatalf("clone request body for contract validation: %v", err)
 		}
 	}
-	response, err := http.DefaultClient.Do(request)
+	client := newE2EHTTPClient(0)
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request)
 	if err != nil {
 		h.t.Fatalf("%s %s: %v\nlogs:\n%s", method, path, err, h.logs.String())
 	}
@@ -375,11 +378,9 @@ func (h *harness) rawRequest(baseURL, method, path, key string) (capturedRespons
 	// Keep-alive is off because an idle pooled connection would still be open
 	// when the process is stopped and would consume the whole graceful
 	// shutdown deadline.
-	client := &http.Client{
-		Transport: &http.Transport{DisableKeepAlives: true},
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	client := newE2EHTTPClient(0)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
@@ -392,6 +393,15 @@ func (h *harness) rawRequest(baseURL, method, path, key string) (capturedRespons
 		h.t.Fatalf("read response: %v", err)
 	}
 	return capturedResponse{StatusCode: response.StatusCode, Header: response.Header.Clone()}, data
+}
+
+// newE2EHTTPClient keeps each exchange self-contained. No idle connection may
+// outlive a request and delay the graceful shutdown exercised by the harness.
+func newE2EHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
 }
 
 func contractOperation(method, path string, headers map[string]string) (string, contracttest.RequestExpectation) {
