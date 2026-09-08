@@ -14,6 +14,7 @@ import (
 	app "github.com/rmotti/payments-boilerplate/internal/application/outbox"
 	domain "github.com/rmotti/payments-boilerplate/internal/domain/webhooks"
 	"github.com/rmotti/payments-boilerplate/internal/platform/database"
+	"github.com/rmotti/payments-boilerplate/internal/platform/errsanitize"
 )
 
 // seedMessage stores one webhook event with its outbox message, the way the
@@ -388,5 +389,65 @@ func TestOutboxBacklogCountsUnpublishedWork(t *testing.T) {
 	}
 	if settled != before {
 		t.Fatalf("pending after publishing = %d, want %d", settled, before)
+	}
+}
+
+// TestOutboxRelaySanitizesLastError guards the E8b invariant that Retry and
+// Failed never persist a cause verbatim: outbox_events.last_error is returned
+// by the operational API alongside the inbox row, so a credential reaching
+// err.Error() here must not survive. The sentinels are unique so a leak
+// cannot be confused with legitimate failure text.
+func TestOutboxRelaySanitizesLastError(t *testing.T) {
+	databaseURL := os.Getenv(testDatabaseURLEnv)
+	if databaseURL == "" {
+		t.Skipf("%s is not set", testDatabaseURLEnv)
+	}
+
+	ctx := context.Background()
+	db := openMigratedTestDatabase(t, databaseURL)
+	repository := NewOutboxRepository(db.SQL)
+
+	const retrySentinel = "sentinel-outbox-retry-7F2C1A"
+	_, retryMessageID, _ := seedMessage(t, db, "sanitize-retry")
+	if _, err := repository.Lease(ctx, "relay-a", 10, time.Minute); err != nil {
+		t.Fatalf("Lease() error = %v", err)
+	}
+	retryCause := fmt.Errorf(
+		"publish failed: amqp://relay:%s@rabbitmq.internal:5672/ (X-API-Key: %s)",
+		retrySentinel, retrySentinel,
+	)
+	if err := repository.Retry(ctx, "relay-a", retryMessageID, retryCause, time.Hour); err != nil {
+		t.Fatalf("Retry() error = %v", err)
+	}
+
+	const failedSentinel = "sentinel-outbox-failed-9D4E6B"
+	_, failedMessageID, _ := seedMessage(t, db, "sanitize-failed")
+	if _, err := repository.Lease(ctx, "relay-b", 10, time.Minute); err != nil {
+		t.Fatalf("Lease() error = %v", err)
+	}
+	failedCause := fmt.Errorf("encode failed: secret=%s could not be applied", failedSentinel)
+	if err := repository.Failed(ctx, "relay-b", failedMessageID, failedCause); err != nil {
+		t.Fatalf("Failed() error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		messageID string
+		sentinel  string
+	}{
+		{"retry", retryMessageID, retrySentinel},
+		{"failed", failedMessageID, failedSentinel},
+	} {
+		var lastError string
+		if err := db.SQL.QueryRowContext(ctx,
+			"SELECT last_error FROM outbox_events WHERE id = $1", tc.messageID).Scan(&lastError); err != nil {
+			t.Fatalf("%s: read last_error: %v", tc.name, err)
+		}
+		if strings.Contains(lastError, tc.sentinel) {
+			t.Fatalf("%s: last_error = %q, leaked the sentinel credential", tc.name, lastError)
+		}
+		if !strings.Contains(lastError, errsanitize.Redacted) {
+			t.Fatalf("%s: last_error = %q, want the stable redaction marker", tc.name, lastError)
+		}
 	}
 }

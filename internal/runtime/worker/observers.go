@@ -2,6 +2,7 @@ package worker
 
 import (
 	consumerapp "github.com/rmotti/payments-boilerplate/internal/application/consumer"
+	"github.com/rmotti/payments-boilerplate/internal/platform/logging"
 	"go.uber.org/zap"
 )
 
@@ -14,7 +15,7 @@ func (o relayObserver) Stuck(messageID string, attempts int, cause error) {
 		zap.String("component", "outbox_relay"),
 		zap.String("message_id", messageID),
 		zap.Int("attempts", attempts),
-		zap.Error(cause),
+		logging.SanitizedError(cause),
 	)
 }
 
@@ -23,7 +24,7 @@ func (o relayObserver) Abandoned(messageID string, attempts int, cause error) {
 		zap.String("component", "outbox_relay"),
 		zap.String("message_id", messageID),
 		zap.Int("attempts", attempts),
-		zap.Error(cause),
+		logging.SanitizedError(cause),
 	)
 }
 
@@ -31,7 +32,7 @@ func (o relayObserver) LeaseLost(messageID string, cause error) {
 	o.logger.Warn("outbox lease expired before the outcome could be recorded",
 		zap.String("component", "outbox_relay"),
 		zap.String("message_id", messageID),
-		zap.Error(cause),
+		logging.SanitizedError(cause),
 	)
 }
 
@@ -62,7 +63,7 @@ func (o consumerObserver) Retrying(eventID string, attempts int, cause error) {
 		zap.String("component", "consumer"),
 		zap.String("webhook_event_id", eventID),
 		zap.Int("attempts", attempts),
-		zap.Error(cause),
+		logging.SanitizedError(cause),
 	)
 }
 
@@ -71,7 +72,7 @@ func (o consumerObserver) DeadLettered(eventID string, attempts int, cause error
 		zap.String("component", "consumer"),
 		zap.String("webhook_event_id", eventID),
 		zap.Int("attempts", attempts),
-		zap.Error(cause),
+		logging.SanitizedError(cause),
 	)
 }
 
@@ -83,7 +84,7 @@ func (o brokerObserver) Rejected(messageID string, cause error) {
 	o.logger.Error("message could not be read and was rejected",
 		zap.String("component", "consumer"),
 		zap.String("message_id", messageID),
-		zap.Error(cause),
+		logging.SanitizedError(cause),
 	)
 }
 
@@ -102,6 +103,6 @@ func (o brokerObserver) Failed(messageID string, cause error) {
 	o.logger.Error("message left unacknowledged for redelivery",
 		zap.String("component", "consumer"),
 		zap.String("message_id", messageID),
-		zap.Error(cause),
+		logging.SanitizedError(cause),
 	)
 }

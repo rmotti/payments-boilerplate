@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rmotti/payments-boilerplate/internal/platform/logging"
 	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
 )
@@ -148,7 +149,7 @@ func (s *Sampler) sample(ctx context.Context) {
 			s.logger.Warn("metrics sample failed; publishing the last known values",
 				zap.String("component", "metrics_sampler"),
 				zap.String("sampler", s.name),
-				zap.Error(err))
+				logging.SanitizedError(err))
 		}
 		return
 	}
@@ -225,6 +226,6 @@ func (s *Sampler) logError(what string, err error) {
 			zap.String("component", "metrics_sampler"),
 			zap.String("sampler", s.name),
 			zap.String("operation", what),
-			zap.Error(err))
+			logging.SanitizedError(err))
 	}
 }

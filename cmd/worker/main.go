@@ -8,18 +8,18 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/rmotti/payments-boilerplate/internal/platform/config"
+	"github.com/rmotti/payments-boilerplate/internal/platform/logging"
 	runtimeworker "github.com/rmotti/payments-boilerplate/internal/runtime/worker"
 )
 
 func main() {
 	if err := run(); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
+		_ = logging.WriteSanitizedError(os.Stderr, err)
 		os.Exit(1)
 	}
 }

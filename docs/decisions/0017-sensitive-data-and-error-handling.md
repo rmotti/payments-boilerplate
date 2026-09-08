@@ -2,7 +2,13 @@
 
 - Status: aceito
 - Data: 2026-09-07
-- Implementação: pendente (E8a documenta a decisão; E8b aplica no código)
+- Implementação: concluída para o escopo de E8b (sanitização de `errorText`,
+  da leitura operacional, dos logs e da saída fatal dos processos; testes
+  negativos com sentinelas; invariante testada
+  sobre `raw_payload`/`payload`, e procedimento de rotação de credenciais).
+  Guia operacional de expurgo, expurgo automatizado e canal privado de
+  vulnerabilidades permanecem pendentes em E9/E11/pós-`0.1.0` — ver "Estado de
+  implementação" abaixo e o backlog oficial em `docs/security.md`.
 
 ## Contexto
 
@@ -308,18 +314,41 @@ tomada, e ninguém sabe que havia uma a tomar.
 
 ## Estado de implementação
 
-Esta ADR é documentação. O que ela decide se torna código em E8b:
+E8b aplicou no código o que esta ADR decide:
 
 - sanitização dentro de `errorText`, em
   `internal/adapters/postgres/repositories/outbox.go`, aplicada antes do
-  truncamento de 500 bytes; por ser a função que os dois caminhos já usam,
-  nenhuma nova fronteira precisa ser criada;
-- teste negativo com valores sentinela sobre logs, traces, `last_error` e
-  respostas públicas;
+  truncamento de 500 bytes, via `internal/platform/errsanitize.Sanitize`. A
+  função continua sendo o ponto único de gravação usado tanto pelo caminho da outbox
+  (`Retry`/`Failed`) quanto pelo `RecordFailure` da inbox — nenhuma nova
+  fronteira foi criada. O sanitizador preserva UTF-8 válido ao truncar e usa
+  o marcador estável `[REDACTED]`. O mesmo tratamento foi estendido, além do
+  que esta ADR exigia originalmente, à leitura da API operacional, aos logs
+  estruturados da API, do relay, do consumer e das migrations
+  (`internal/platform/logging.SanitizedError`), e à saída fatal em `stderr` dos
+  binários, porque um erro de driver ou de broker pode carregar a mesma
+  credencial em qualquer uma dessas superfícies;
+- teste negativo com valores sentinela sobre logs (API, relay e consumer),
+  atributos e eventos de trace OpenTelemetry, `last_error` (outbox e inbox) e
+  respostas HTTP públicas — ver
+  `internal/transport/http/errsanitize_negative_test.go`,
+  `internal/runtime/worker/observers_test.go` e os testes de sanitização em
+  `internal/adapters/postgres/repositories/{events,outbox}_test.go`;
 - teste que impede qualquer query operacional de selecionar `raw_payload` ou
-  `payload`;
-- procedimento de expurgo publicado em `docs/security.md` e referenciado pelo
-  guia operacional de E9.
+  `payload`, verificando tanto os tipos de linha gerados pelo sqlc quanto o
+  texto-fonte de `db/queries/operations.sql` — ver
+  `internal/adapters/postgres/repositories/operations_sql_test.go`;
+- procedimento de rotação de `INTEGRATION_API_KEYS`, `STRIPE_SECRET_KEY` e
+  `STRIPE_WEBHOOK_SECRET`, e registro de minimização/retenção de URLs de
+  Checkout e chaves de idempotência, publicados em `docs/security.md`.
+
+O procedimento de expurgo de payloads já existia em `docs/security.md` antes
+de E8b (seção "Política de retenção") e não foi alterado por esta etapa. Ele
+ainda não é referenciado por um guia operacional dedicado, porque esse guia é
+entrega de E9 e não existe nesta versão; a purga automatizada/temporizada de
+`payment_attempts.checkout_url` e das chaves de idempotência também permanece
+para E9 ou pós-`0.1.0`, como registrado no backlog oficial de
+`docs/security.md` (`E8A-6`, `E8A-7`, `E8A-9`).
 
 Os itens derivados usam identificadores estáveis e estão registrados no backlog
 oficial de `docs/security.md`; não há alegação de que já existam issues externas.

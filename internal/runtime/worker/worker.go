@@ -85,7 +85,7 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 		defer cancel()
 		if err := shutdownTelemetry(shutdownCtx); err != nil {
-			logger.Error("telemetry shutdown failed", zap.Error(err))
+			logger.Error("telemetry shutdown failed", logging.SanitizedError(err))
 		}
 	}()
 
@@ -111,7 +111,7 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			logger.Error("postgres shutdown failed", zap.Error(err))
+			logger.Error("postgres shutdown failed", logging.SanitizedError(err))
 		}
 	}()
 	if err := metrics.RegisterPoolMetrics(appMetrics, db.SQL, logger); err != nil {
@@ -127,11 +127,11 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		return broker.Connect(startupCtx)
 	}); err != nil {
 		logger.Warn("rabbitmq unavailable at startup; the relay will keep retrying",
-			zap.Error(err))
+			logging.SanitizedError(err))
 	}
 	defer func() {
 		if err := broker.Close(); err != nil {
-			logger.Error("rabbitmq shutdown failed", zap.Error(err))
+			logger.Error("rabbitmq shutdown failed", logging.SanitizedError(err))
 		}
 	}()
 
@@ -143,13 +143,13 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 	consumerBroker := rabbitmq.New(cfg.RabbitMQURL, cfg.ServiceName+"-consumer")
 	defer func() {
 		if err := consumerBroker.Close(); err != nil {
-			logger.Error("consumer connection shutdown failed", zap.Error(err))
+			logger.Error("consumer connection shutdown failed", logging.SanitizedError(err))
 		}
 	}()
 	republishBroker := rabbitmq.New(cfg.RabbitMQURL, cfg.ServiceName+"-republish")
 	defer func() {
 		if err := republishBroker.Close(); err != nil {
-			logger.Error("republish connection shutdown failed", zap.Error(err))
+			logger.Error("republish connection shutdown failed", logging.SanitizedError(err))
 		}
 	}()
 
@@ -161,7 +161,7 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 	samplingBroker := rabbitmq.New(cfg.RabbitMQURL, cfg.ServiceName+"-metrics")
 	defer func() {
 		if err := samplingBroker.Close(); err != nil {
-			logger.Error("metrics sampling connection shutdown failed", zap.Error(err))
+			logger.Error("metrics sampling connection shutdown failed", logging.SanitizedError(err))
 		}
 	}()
 
@@ -174,11 +174,11 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 	// Warm the channel so the first message does not spend its budget on
 	// setup. A broker that is still down simply warms later, on demand.
 	if err := publisher.Warm(startupCtx); err != nil {
-		logger.Warn("outbox publisher not ready yet", zap.Error(err))
+		logger.Warn("outbox publisher not ready yet", logging.SanitizedError(err))
 	}
 	defer func() {
 		if err := publisher.Close(); err != nil {
-			logger.Error("publisher shutdown failed", zap.Error(err))
+			logger.Error("publisher shutdown failed", logging.SanitizedError(err))
 		}
 	}()
 
@@ -294,7 +294,7 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		return relay.Run(groupCtx, func(err error) {
 			// A failing cycle is expected while the broker is down. The relay
 			// keeps going because the messages stay safely in PostgreSQL.
-			relayLogger.Error("outbox relay cycle failed", zap.Error(err))
+			relayLogger.Error("outbox relay cycle failed", logging.SanitizedError(err))
 		})
 	})
 	group.Go(func() error {
@@ -304,7 +304,7 @@ func Run(ctx context.Context, cfg config.Config, opts Options) error {
 		return messageConsumer.Run(groupCtx, func(err error) {
 			// A dead session is expected while the broker is down. Messages
 			// stay on the queue, unacknowledged, and come back on reconnect.
-			consumerLogger.Error("consumer session ended", zap.Error(err))
+			consumerLogger.Error("consumer session ended", logging.SanitizedError(err))
 		})
 	})
 	// The samplers run beside the relay and the consumer, and their Run never

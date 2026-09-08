@@ -9,6 +9,7 @@ import (
 	dbgen "github.com/rmotti/payments-boilerplate/internal/adapters/postgres/queries"
 	app "github.com/rmotti/payments-boilerplate/internal/application/outbox"
 	domain "github.com/rmotti/payments-boilerplate/internal/domain/webhooks"
+	"github.com/rmotti/payments-boilerplate/internal/platform/errsanitize"
 )
 
 // leaseTimeout bounds the claim statement. It is short because the statement
@@ -162,17 +163,17 @@ func messageFromRow(row dbgen.LeaseOutboxBatchRow) domain.Message {
 	}
 }
 
-// errorText keeps the cause without letting an unbounded broker message grow
-// the row without limit.
+// errorText is the single point both the outbox relay and the inbox
+// RecordFailure path use to turn a cause into what last_error stores. It is
+// the superset of what an integrator can read back from the operational API,
+// so a cause is sanitized before it is truncated: truncating first would
+// still leave a credential intact if it falls inside the kept prefix, which
+// is exactly what a driver or broker error beginning with a DSN does.
 func errorText(err error) sql.NullString {
 	if err == nil {
 		return sql.NullString{}
 	}
-	const maxLength = 500
-	text := err.Error()
-	if len(text) > maxLength {
-		text = text[:maxLength]
-	}
+	text := errsanitize.Sanitize(err.Error())
 	return sql.NullString{String: text, Valid: true}
 }
 

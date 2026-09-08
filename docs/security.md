@@ -188,31 +188,179 @@ efeito.
 ## Regras de conteúdo
 
 Valem para logs, traces, métricas, `last_error` e respostas públicas. A
-verificação automatizada faz parte de E8b.
+verificação automatizada é E8b e está implementada.
 
-- Sanitizar **antes** de truncar. O truncamento de 500 bytes feito por
-  `errorText`, em `internal/adapters/postgres/repositories/outbox.go`, limita o
-  tamanho e não remove nada de sensível: um texto que começa com uma DSN
-  continua vazando a senha depois de truncado. A função já é o ponto por onde
-  passam tanto o caminho da outbox quanto o `RecordFailure` da inbox.
+- Sanitizar **antes** de truncar. `internal/platform/errsanitize.Sanitize`
+  redige credenciais e segredos estruturados e só então corta o texto em
+  `errsanitize.MaxLength` (500 bytes), preservando um limite máximo de UTF-8
+  válido — nunca corta um rune ao meio. `errorText`, em
+  `internal/adapters/postgres/repositories/outbox.go`, é o ponto único por
+  onde passam tanto o caminho da outbox (`Retry`/`Failed`) quanto o
+  `RecordFailure` da inbox, e é a única função que grava `last_error` em
+  qualquer uma das duas tabelas. A API sanitiza novamente na leitura, em
+  `operationNullableString`, para proteger valores legados ou escritos
+  manualmente antes dessa regra existir.
+- O sanitizador redige, no mínimo: credenciais em URLs PostgreSQL,
+  RabbitMQ/AMQP e HTTP (`scheme://usuário:senha@host`, incluindo credenciais
+  URL-encoded); os headers `Authorization`, `X-API-Key`, `Proxy-Authorization`
+  e `Cookie`/`Set-Cookie`; parâmetros e padrões como `password`, `passwd`,
+  `token`, `secret`, `api_key` e `access_key`; chaves secretas e restritas da
+  Stripe (`sk_live_*`, `sk_test_*`, `rk_live_*`, `rk_test_*`); o webhook secret
+  (`whsec_*`); valores cotados em formatos como JSON; e qualquer valor do header
+  `Stripe-Signature`, inclusive formatos inválidos. O marcador é sempre
+  `[REDACTED]`, estável entre versões, para que um integrador ou operador
+  distinga "o erro não disse nada aqui" de "o erro dizia algo e foi removido".
+- O mesmo sanitizador é aplicado ao formatar o campo de erro em logs
+  estruturados da API, do relay e do consumer, via
+  `internal/platform/logging.SanitizedError`, ao texto fatal escrito em
+  `stderr` pelos três binários e às mensagens do runner de migrations. O valor
+  recuperado por um `recover()` de pânico HTTP recebe o mesmo tratamento.
+  Nenhum desses caminhos loga o corpo de uma
+  requisição ou de um webhook, o corpo de resposta de um handler, ou a URL de
+  Checkout completa. `errors.Is` e `errors.As` continuam operando sobre o
+  erro original, não sanitizado: só a representação textual logada passa pelo
+  sanitizador.
 - Nunca incluir: corpo de requisição ou de webhook; `X-API-Key`;
   `STRIPE_SECRET_KEY` e `STRIPE_WEBHOOK_SECRET`; credenciais em URLs de
   PostgreSQL e RabbitMQ; nome, e-mail, telefone, endereço ou dados de cobrança;
-  resposta integral do provedor.
+  resposta integral do provedor; URL de Checkout completa.
 - Métricas não usam IDs, secrets ou valores de entrada livre como labels.
 - Nenhuma query da API operacional pode selecionar `raw_payload` ou `payload`.
   As queries em `db/queries/operations.sql` listam colunas explicitamente por
-  esse motivo; isso é invariante testada, não convenção.
+  esse motivo; isso é invariante testada em
+  `internal/adapters/postgres/repositories/operations_sql_test.go`, tanto
+  sobre os tipos gerados pelo sqlc quanto sobre o texto-fonte do arquivo
+  `.sql`, não apenas por convenção.
 - Mensagens públicas continuam úteis: identificam a classe do erro e carregam
-  correlação suficiente para achar o detalhe nos logs, que são a superfície
-  privada.
+  correlação suficiente para achar o detalhe nos logs, que continuam podendo
+  mostrar mais contexto operacional do que a resposta pública, mas nunca um
+  segredo capturado por este sanitizador.
+- O sanitizador não faz reconhecimento geral de PII: nome, e-mail, telefone e
+  endereço que cheguem a uma mensagem de erro por acidente não são detectados
+  por padrão de texto. A defesa contra isso é não colocar esses dados dentro
+  de um erro em primeiro lugar — nenhum caminho de código deste repositório
+  interpola `customer_details` ou qualquer campo do payload do provedor em uma
+  mensagem de erro.
+
+## Rotação de credenciais
+
+Procedimento para as três credenciais que este projeto trata como secret. Cada
+implantação adapta o mecanismo de deploy e de armazenamento (variável de
+ambiente, secret manager, etc.); o que segue é a sequência e a ordem que evita
+indisponibilidade e reprocessamento incorreto.
+
+### `INTEGRATION_API_KEYS`
+
+Aceita mais de uma chave ativa separada por vírgula, exatamente para permitir
+rotação sem indisponibilidade (ver [ADR 0010](decisions/0010-route-access-model.md)).
+
+1. Gere a nova chave com uma fonte criptográfica e pelo menos 256 bits de
+   entropia.
+2. Adicione a nova chave à variável `INTEGRATION_API_KEYS`, mantendo a antiga,
+   e reimplante a API. As duas chaves ficam válidas simultaneamente.
+3. Distribua a nova chave ao(s) sistema(s) integrador(es) e confirme que eles
+   passaram a usá-la — por exemplo, acompanhando que requisições autenticadas
+   continuam chegando sem erros `401` durante a janela de transição.
+4. Remova a chave antiga de `INTEGRATION_API_KEYS` e reimplante. A partir daqui
+   qualquer requisição com a chave antiga responde `401 Unauthorized`.
+5. Se a rotação for motivada por suspeita de vazamento, pule a janela de
+   transição: remova a chave comprometida imediatamente e trate a
+   indisponibilidade do integrador como consequência aceitável do
+   comprometimento.
+
+### `STRIPE_SECRET_KEY`
+
+Autentica chamadas desta aplicação para a Stripe (criação de Checkout Session
+e operações relacionadas).
+
+1. No Dashboard da Stripe, crie uma nova chave secreta (ou use o fluxo de
+   [roll de chave](https://docs.stripe.com/keys#roll-keys) quando disponível).
+2. Atualize `STRIPE_SECRET_KEY` na configuração da implantação e reimplante a
+   API. Não há suporte a duas chaves simultâneas neste campo: a troca é
+   pontual, então trate isso como uma janela curta de manutenção.
+3. Confirme que uma criação de Checkout Session de teste funciona com a nova
+   chave antes de revogar a antiga.
+4. Revogue a chave antiga no Dashboard da Stripe.
+5. Se a rotação for por vazamento, revogue a chave antiga no Dashboard
+   **antes** de qualquer outro passo — parar o abuso é mais urgente do que
+   manter a API disponível — e só depois configure e implante a nova.
+
+### `STRIPE_WEBHOOK_SECRET`
+
+Verifica a assinatura `Stripe-Signature` de cada evento recebido; é a única
+prova de origem que este projeto tem para um webhook (ver
+[ADR 0017](decisions/0017-sensitive-data-and-error-handling.md), seção do
+modelo de ameaça sobre "provedor comprometido, ou alguém que capture uma
+entrega"). Uma rotação errada faz a Stripe redeliverar eventos que a aplicação
+passa a rejeitar como assinatura inválida.
+
+1. No Dashboard da Stripe, adicione um novo endpoint de webhook apontando para
+   a mesma URL, ou gere um novo signing secret para o endpoint existente, se a
+   Stripe oferecer essa opção sem recriar o endpoint.
+2. Atualize `STRIPE_WEBHOOK_SECRET` na configuração da implantação e reimplante
+   o processo que recebe o webhook. Como só há um secret ativo por vez neste
+   campo, eventos entregues entre a geração do novo secret na Stripe e o
+   reimplante bem-sucedido são rejeitados com `400 invalid_signature` e
+   redelivered pela Stripe (ver política de reentrega da Stripe); eles não são
+   perdidos, apenas atrasados.
+3. Confirme nas métricas ou nos logs que eventos voltam a ser aceitos
+   (`202`/`200`) e que o contador de assinatura inválida parou de crescer.
+4. Se um endpoint antigo foi criado em paralelo, remova-o do Dashboard.
+5. Se a rotação for por suspeita de vazamento do secret, trate como incidente:
+   um secret vazado permite forjar eventos com efeito financeiro. Rotacione
+   imediatamente e audite `webhook_events` por eventos suspeitos recebidos
+   enquanto o secret esteve comprometido.
+
+## Minimização e retenção de URLs de Checkout e chaves de idempotência
+
+Registro do que E8b cobre para os dois valores de entrada livre ou
+confidenciais identificados no inventário
+(`payment_attempts.checkout_url` e as chaves de idempotência de `orders` e
+`payment_attempts`). Ver também `E8A-9` no backlog oficial abaixo.
+
+**O que já está implementado:**
+
+- A URL de Checkout nunca é escrita em log ou em atributo de trace por nenhum
+  caminho de código deste repositório. Ela é gravada apenas em
+  `payment_attempts.checkout_url` (acesso: API de checkout e banco) e
+  devolvida ao integrador uma única vez, na resposta de
+  `POST /v1/orders/{orderId}/checkout`, que é o propósito do endpoint — sem
+  isso o integrador não teria como redirecionar o cliente. Um teste negativo
+  com valor sentinela cobre este caminho.
+- Chaves de idempotência fornecidas pelo integrador (`orders.idempotency_key`,
+  `payment_attempts.idempotency_key`) não são usadas como label de métrica e
+  não aparecem em logs de acesso; elas trafegam apenas no corpo da requisição,
+  no banco e na resposta ecoada ao próprio integrador que a enviou.
+- Mensagens de erro que cheguem a mencionar uma chave de idempotência ou uma
+  URL de Checkout dentro de `last_error` passam pelo mesmo sanitizador que
+  remove credenciais; isso reduz, mas não elimina, o risco de uma chave
+  formatada como segredo (por exemplo, contendo `token=` por acidente) vazar
+  por esse campo.
+
+**O que fica explicitamente para depois de E8b:**
+
+- Minimização ativa na origem — por exemplo, recusar ou truncar uma chave de
+  idempotência que pareça conter dados pessoais ou um segredo antes de
+  persisti-la — não está implementada. A chave é tratada como identificador
+  opaco fornecido pelo integrador; impedir que ela carregue dados pessoais é
+  responsabilidade da implantação, como já registrado no inventário.
+- Expurgo automático ou temporizado de `payment_attempts.checkout_url` (por
+  exemplo, apagar a URL depois que a sessão expira em `payment_attempts.expires_at`)
+  não está implementado. Hoje a URL acompanha o ciclo de vida do pagamento, sem
+  expurgo automático, pelo mesmo motivo geral da seção 4 do
+  [ADR 0017](decisions/0017-sensitive-data-and-error-handling.md): falta
+  métrica de volume e teste de sistema que prove que o expurgo não atinge
+  tentativas ainda em curso. Esse trabalho pertence a E9 ou pós-`0.1.0`
+  (`E8A-9`, `E8A-6`, `E8A-7`).
+- Um guia operacional consolidado de purga (runbook) e a purga automatizada
+  continuam fora do escopo de E8b; ver a seção "Backlog oficial" abaixo.
 
 ## Modelo de ameaça
 
 | Atacante | Alcance | O projeto opõe | O projeto não opõe |
 | --- | --- | --- | --- |
 | Integrador hostil, com chave válida | Toda a API operacional da instalação | Payloads fora das queries operacionais; sanitização de `last_error`; rate limiting | Segregação por tenant — uma chave válida vê todos os eventos |
-| Terceiro na internet | Health, webhook e Checkout | Verificação de `Stripe-Signature` sobre os bytes originais antes de desserializar; limite de corpo; allowlist de rotas públicas ([ADR 0010](decisions/0010-route-access-model.md)); documentação desligada por padrão e autenticada fora de development, headers de segurança e ausência de CORS ([ADR 0016](decisions/0016-http-surface-and-client-identity.md)); rate limiting | Resposta de erro provocada por corpo acima do limite; ataque volumétrico |
+| Terceiro na internet | Health e webhook; alcança a fronteira HTTP das demais rotas, mas não passa da autenticação | Verificação de `Stripe-Signature` sobre os bytes originais antes de desserializar; limite de corpo; allowlist de rotas públicas ([ADR 0010](decisions/0010-route-access-model.md)); documentação desligada por padrão e autenticada fora de development, headers de segurança e ausência de CORS ([ADR 0016](decisions/0016-http-surface-and-client-identity.md)); rate limiting | Resposta de erro provocada por corpo acima do limite; ataque volumétrico |
 | Pessoa com acesso operacional | Banco, broker, logs e traces | Minimização: payloads fora de logs, traces e mensagens; evento completo apenas no PostgreSQL | Mascaramento por coluna; cifragem em nível de aplicação; auditoria de leitura no banco |
 | Provedor comprometido ou entrega capturada | Injeção de eventos forjados com efeito financeiro | `STRIPE_WEBHOOK_SECRET` como secret; rotação documentada; inbox preserva os bytes recebidos para auditoria posterior | Segunda prova de origem |
 
@@ -251,14 +399,14 @@ não forem espelhados no rastreador externo, não devem ser descritos como issue
 do GitHub. Uma issue futura deve manter o identificador abaixo e apontar para
 esta seção.
 
-| ID | Item | Entrega |
-| --- | --- | --- |
-| E8A-1 | Sanitização dentro de `errorText`, aplicada antes do truncamento | E8b |
-| E8A-2 | Teste unitário do sanitizador com DSNs, URLs escapadas, headers e padrões de credencial | E8b |
-| E8A-3 | Teste negativo com valores sentinela sobre logs, traces, `last_error` e respostas públicas | E8b |
-| E8A-4 | Teste que impede qualquer query operacional de selecionar `raw_payload` ou `payload` | E3/E8b |
-| E8A-5 | Procedimento de rotação de `INTEGRATION_API_KEYS`, `STRIPE_SECRET_KEY` e `STRIPE_WEBHOOK_SECRET` | E8b |
-| E8A-6 | Expurgo no checklist operacional, com periodicidade recomendada | E9 |
-| E8A-7 | Reavaliar expurgo automatizado depois das métricas de E5 | Pós-0.1.0 |
-| E8A-8 | Canal privado de vulnerabilidades ativo e testado | E11, bloqueia a `0.1.0` |
-| E8A-9 | Definir minimização e retenção automática para URLs de Checkout e chaves de idempotência | E8b/E9 |
+| ID | Item | Entrega | Status |
+| --- | --- | --- | --- |
+| E8A-1 | Sanitização dentro de `errorText`, aplicada antes do truncamento | E8b | Concluído — `internal/platform/errsanitize.Sanitize`, usado por `errorText` em `internal/adapters/postgres/repositories/outbox.go` |
+| E8A-2 | Teste unitário do sanitizador com DSNs, URLs escapadas, headers e padrões de credencial | E8b | Concluído — `internal/platform/errsanitize/errsanitize_test.go` |
+| E8A-3 | Teste negativo com valores sentinela sobre logs, traces, `last_error` e respostas públicas | E8b | Concluído — inclui saída fatal de processo, logs internos, traces, gravação e leitura legada de `last_error`, e respostas HTTP públicas |
+| E8A-4 | Teste que impede qualquer query operacional de selecionar `raw_payload` ou `payload` | E3/E8b | Concluído — `internal/adapters/postgres/repositories/operations_sql_test.go` |
+| E8A-5 | Procedimento de rotação de `INTEGRATION_API_KEYS`, `STRIPE_SECRET_KEY` e `STRIPE_WEBHOOK_SECRET` | E8b | Concluído — seção "Rotação de credenciais" acima |
+| E8A-6 | Expurgo no checklist operacional, com periodicidade recomendada | E9 | Pendente — fora do escopo de E8b |
+| E8A-7 | Reavaliar expurgo automatizado depois das métricas de E5 | Pós-0.1.0 | Pendente — fora do escopo de E8b |
+| E8A-8 | Canal privado de vulnerabilidades ativo e testado | E11, bloqueia a `0.1.0` | Pendente — fora do escopo de E8b |
+| E8A-9 | Definir minimização e retenção automática para URLs de Checkout e chaves de idempotência | E8b/E9 | Parcial — minimização em logs/traces concluída (seção acima); expurgo automático/temporizado permanece para E9 |

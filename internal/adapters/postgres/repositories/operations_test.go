@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	app "github.com/rmotti/payments-boilerplate/internal/application/webhooks"
 	domain "github.com/rmotti/payments-boilerplate/internal/domain/webhooks"
+	"github.com/rmotti/payments-boilerplate/internal/platform/errsanitize"
 )
 
 func TestWebhookRepositoryInspectsAndSafelyReprocessesFailure(t *testing.T) {
@@ -18,6 +20,7 @@ func TestWebhookRepositoryInspectsAndSafelyReprocessesFailure(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	eventID, _ := domain.NewEventID()
 	messageID, _ := domain.NewMessageID()
+	const legacySentinel = "legacy-last-error-secret"
 	providerEventID := "evt_replay_provider_" + eventID
 	raw := []byte(`{"id":"` + providerEventID + `","object":"event"}`)
 	event, err := domain.NewEvent(eventID, domain.Stripe, providerEventID,
@@ -38,13 +41,13 @@ func TestWebhookRepositoryInspectsAndSafelyReprocessesFailure(t *testing.T) {
 	})
 
 	if _, err := db.SQL.ExecContext(ctx, `UPDATE webhook_events
-		SET status = 'failed', attempts = 10, last_error = 'old consumer failure'
-		WHERE id = $1`, eventID); err != nil {
+			SET status = 'failed', attempts = 10, last_error = $2
+			WHERE id = $1`, eventID, "postgres://payments:"+legacySentinel+"@db.internal/payments"); err != nil {
 		t.Fatalf("fail inbox event: %v", err)
 	}
 	if _, err := db.SQL.ExecContext(ctx, `UPDATE outbox_events
-		SET status = 'published', attempts = 2, published_at = now(), last_error = 'old publish note'
-		WHERE webhook_event_id = $1`, eventID); err != nil {
+			SET status = 'published', attempts = 2, published_at = now(), last_error = $2
+			WHERE webhook_event_id = $1`, eventID, "amqp://relay:"+legacySentinel+"@rabbitmq.internal/"); err != nil {
 		t.Fatalf("publish outbox event: %v", err)
 	}
 
@@ -54,6 +57,17 @@ func TestWebhookRepositoryInspectsAndSafelyReprocessesFailure(t *testing.T) {
 	}
 	if len(failed) != 1 || failed[0].ID != eventID || failed[0].Outbox == nil {
 		t.Fatalf("failed events = %#v, want seeded event with outbox metadata", failed)
+	}
+	for name, value := range map[string]string{
+		"inbox":  failed[0].LastError,
+		"outbox": failed[0].Outbox.LastError,
+	} {
+		if strings.Contains(value, legacySentinel) {
+			t.Fatalf("%s last_error = %q, exposed a legacy credential", name, value)
+		}
+		if !strings.Contains(value, errsanitize.Redacted) {
+			t.Fatalf("%s last_error = %q, want %q", name, value, errsanitize.Redacted)
+		}
 	}
 
 	replayed, err := repository.Reprocess(ctx, eventID)
