@@ -42,6 +42,7 @@ APP_ENV=production
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 INTEGRATION_API_KEYS=<chave-gerada-com-openssl-rand-hex-32>
 STRIPE_SECRET_KEY=<sk_test_...-ou-chave-do-ambiente>
+STRIPE_WEBHOOK_SECRET=<whsec_...-do-endpoint-da-api>
 STRIPE_SUCCESS_URL=https://seu-frontend.example/pagamento/sucesso
 STRIPE_CANCEL_URL=https://seu-frontend.example/pagamento/cancelado
 LOG_LEVEL=info
@@ -129,6 +130,13 @@ curl --fail --show-error -H "X-API-Key: $API_KEY" \
 A primeira chamada deve retornar HTTP 200 com `postgres: up`. A segunda só
 funciona com `DOCS_ENABLED=true`: sem o opt-in ela retorna `404` e, com o
 opt-in mas sem chave válida, `401`.
+
+Um `502` nessa primeira chamada significa que o proxy público não conseguiu
+alcançar o processo da API. Confirme nos runtime logs que `/app/api` iniciou,
+que todas as variáveis mínimas acima estão definidas e que o domínio não possui
+um target port diferente da variável `PORT` injetada pela Railway. Um erro de
+configuração, como `STRIPE_WEBHOOK_SECRET is required for the API`, encerra o
+processo antes que ele consiga servir `/health`.
 
 ## Referências
 
