@@ -67,7 +67,7 @@ múltiplos provedores.
 ## Fase 4 — Qualidade para publicação
 
 - [x] Cobrir cenários críticos com testes de integração.
-- [ ] Adicionar dados e comandos reproduzíveis de sandbox.
+- [x] Adicionar dados e comandos reproduzíveis de sandbox.
 - [x] Verificar que exemplos OpenAPI correspondem às respostas reais.
 - [x] Testar interrupções entre PostgreSQL, relay, RabbitMQ e consumer.
 - [x] Publicar métricas de outbox, filas, retries e DLQ.

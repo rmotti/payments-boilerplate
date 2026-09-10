@@ -1,0 +1,27 @@
+{
+  "id": "evt_fixture",
+  "object": "event",
+  "api_version": "fixture",
+  "created": 0,
+  "type": "checkout.session.completed",
+  "data": {
+    "object": {
+      "id": "cs_fixture",
+      "object": "checkout.session",
+      "payment_status": "paid",
+      "status": "complete",
+      "amount_total": 0,
+      "currency": "brl",
+      "client_reference_id": "ord_fixture",
+      "payment_intent": {
+        "id": "pi_fixture",
+        "object": "payment_intent"
+      },
+      "metadata": {
+        "order_id": "ord_fixture",
+        "payment_id": "pay_fixture",
+        "payment_attempt_id": "pat_fixture"
+      }
+    }
+  }
+}

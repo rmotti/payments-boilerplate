@@ -41,6 +41,12 @@ E2E_RABBITMQ_URL='amqp://payments:payments_local@127.0.0.1:5672/' \
 make test-e2e
 ```
 
+Para não tocar em outro ambiente local já ativo, uma segunda instalação
+Compose pode usar as portas isoladas `55433` para PostgreSQL e `5673` para
+RabbitMQ; essas são as únicas portas alternativas aceitas pela proteção de
+cleanup. O usuário, senha, banco, vhost, loopback e consentimento explícito
+continuam obrigatórios.
+
 Sem as duas URLs, os cenários dependentes de infraestrutura são pulados, mas a
 compilação do harness e os testes das proteções de cleanup continuam rodando.
 Uma URL remota ou uma flag ausente causa recusa explícita, nunca um fallback.

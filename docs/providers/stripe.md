@@ -170,10 +170,9 @@ validado sem presumir que a conclusão do Checkout significa liquidação.
   publicar o backlog quando o broker voltar.
 - Interromper relay e consumer nas janelas entre persistência, publicação e ack
   sem perder o evento nem repetir seu efeito financeiro.
-
-### Pendente na Fase 4
-
-- Testar no sandbox o caminho de expiração/falha do Pix com dados reproduzíveis.
+- Reproduzir com fixtures assinadas os caminhos de processamento, sucesso,
+  falha e expiração do Pix; comandos e limites estão no
+  [guia de sandbox](../sandbox.md).
 
 A Stripe CLI encaminha eventos ao ambiente local:
 
