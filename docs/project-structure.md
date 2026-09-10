@@ -10,7 +10,7 @@ db/            migrations, queries SQL e configuracao do sqlc
 deployments/   arquivos especificos de ambientes de implantacao
 docs/          arquitetura, decisoes e guias do projeto
 internal/      toda implementacao que nao constitui API publica Go
-tests/         espaco reservado para testes futuros de fluxo completo
+tests/         testes ponta a ponta e de falhas entre processos e adapters
 .github/       automacoes de integracao, seguranca e releases
 ```
 
@@ -51,9 +51,11 @@ O catalogo de produtos vive em `internal/adapters/catalog`. Na versao 0.1 ele e
 fixo e em memoria, mas ja fica atras da porta `Catalog` do caso de uso, entao um
 catalogo persistido ou remoto entra como outro adapter sem tocar o dominio.
 
-Os testes de integracao PostgreSQL atuais ficam junto dos repositories que
-exercitam. O diretorio `tests/` sera usado quando um cenario precisar atravessar
-varios adapters ou processos, como webhook, outbox, RabbitMQ e worker.
+Os testes de integração PostgreSQL ficam junto dos repositories que exercitam.
+O diretório `tests/e2e` atravessa API, worker, PostgreSQL e RabbitMQ usando a
+mesma composição dos binários; `tests/chaos` cobre interrupções determinísticas
+e recuperação de dependências reais. Os comandos e requisitos estão em
+[`tests/README.md`](../tests/README.md).
 
 Diretorios `pkg/` e `utils/` nao devem ser criados sem um consumidor externo ou
 uma responsabilidade claramente definida.

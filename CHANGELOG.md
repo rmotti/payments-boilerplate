@@ -136,6 +136,10 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Documentação sincronizada com o estado real da Fase 4: roadmap e README agora
+  registram rate limiting, revisão de dados sensíveis e fluxo de contribuição
+  como concluídos; arquitetura, integração Stripe e estrutura de testes deixam
+  de apresentar os testes de falha já entregues como trabalho futuro.
 - Superfície HTTP fechada. A documentação passa a ser opt-in por `DOCS_ENABLED`,
   com default `false` em todos os ambientes: sem o opt-in, `/docs`, `/docs/` e
   `/openapi.yaml` respondem `404` como qualquer caminho inexistente. Em

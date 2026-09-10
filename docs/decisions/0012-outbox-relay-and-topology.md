@@ -160,9 +160,10 @@ transitório: um erro só é permanente quando o código diz que é.
 é reportada, e **não** interrompe as tentativas. A contagem serve ao operador,
 não à decisão de desistir.
 
-Um limite terminal por tempo pode ser considerado depois, mas só faz sentido
-quando existirem inspeção e reprocessamento — hoje uma mensagem em `failed`
-depende de intervenção manual que ainda não tem ferramenta.
+Um limite terminal por tempo pode ser considerado depois. A inspeção e o
+reprocessamento seguro já existem por meio das operações autenticadas de
+webhook; uma mensagem em `failed` pode ser diagnosticada e sua inbox/outbox
+original reenfileirada sem criar uma segunda cópia.
 
 A ordem de publicação é por antiguidade, mas não há garantia de ordenação entre
 mensagens: o consumer precisa tolerar eventos fora de ordem de qualquer forma,
