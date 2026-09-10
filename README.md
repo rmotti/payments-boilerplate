@@ -12,9 +12,9 @@ O projeto não é um gateway, uma instituição financeira
 nem um sistema que captura ou armazena dados completos de cartão.
 
 > [!IMPORTANT]
-> As Fases 0 a 3 estão concluídas, mas ainda não existe uma versão pronta para
-> produção. O uso deste código não garante conformidade com PCI DSS, LGPD ou
-> qualquer outra obrigação regulatória.
+> As Fases 0 a 3 estão concluídas e a Fase 4 está em andamento, mas ainda não
+> existe uma versão pronta para produção. O uso deste código não garante
+> conformidade com PCI DSS, LGPD ou qualquer outra obrigação regulatória.
 
 > [!WARNING]
 > A aplicação **armazena dados pessoais**. Cada evento da Stripe é gravado na
@@ -34,7 +34,7 @@ ficam em [docs/roadmap.md](docs/roadmap.md), que é a fonte de verdade.
 | Fase 1 — Fundação executável | Concluída | API, banco, migrations, observabilidade, CI e deploy documentado |
 | Fase 2 — Primeiro pagamento vertical | Concluída | API key, pedido idempotente, consulta e Stripe Checkout em BRL |
 | Fase 3 — Confirmação assíncrona confiável | Concluída | Webhook, inbox/outbox, relay, consumer, inspeção, replay seguro e Pix |
-| Fase 4 — Qualidade para publicação | Planejada | Hardening, testes de falha, métricas e guias operacionais |
+| Fase 4 — Qualidade para publicação | Em andamento | Hardening, testes de falha e métricas concluídos; sandbox, checklist operacional e revisão final de segurança pendentes |
 
 Um pagamento concluído na Stripe agora chega ao estado local: o webhook
 verificado é gravado na inbox, publicado pelo relay e aplicado pelo consumer,

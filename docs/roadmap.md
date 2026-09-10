@@ -71,11 +71,11 @@ múltiplos provedores.
 - [x] Verificar que exemplos OpenAPI correspondem às respostas reais.
 - [x] Testar interrupções entre PostgreSQL, relay, RabbitMQ e consumer.
 - [x] Publicar métricas de outbox, filas, retries e DLQ.
-- [ ] Aplicar rate limiting às operações públicas e aos endpoints sujeitos a abuso.
+- [x] Aplicar rate limiting às operações públicas e aos endpoints sujeitos a abuso.
 - [x] Desabilitar ou proteger o Swagger UI fora do ambiente de desenvolvimento.
-- [ ] Revisar logs, secrets e tratamento de dados pessoais.
-- [ ] Criar guia de implantação e checklist operacional.
-- [ ] Criar guia de contribuição e templates do repositório.
+- [x] Revisar logs, secrets e tratamento de dados pessoais.
+- [ ] Completar o guia de implantação com um checklist operacional consolidado.
+- [x] Criar guia de contribuição e template de pull request.
 - [ ] Fazer revisão de segurança antes da versão `0.1.0`.
 
 ## Depois da versão 0.1

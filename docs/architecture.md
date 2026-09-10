@@ -465,14 +465,16 @@ Cobertos:
 - Mensagem malformada republicada explicitamente e confirmada na DLQ.
 - Budget esgotado fechando a inbox e enviando a mensagem à DLQ sem divergência
   entre os dois estados.
-
-Planejados para a Fase 4:
-
-- Timeout depois de o provedor aceitar a operação e antes da persistência local.
 - RabbitMQ indisponível depois do commit da inbox e do outbox.
 - Queda do relay depois do publisher confirm e antes de atualizar o outbox.
 - Queda do consumer antes e depois do commit no PostgreSQL.
 - Consulta do pedido antes e depois da entrega do webhook.
+
+Pendente na Fase 4:
+
+- Reproduzir o timeout depois de o provedor aceitar a operação e antes da
+  persistência local. A idempotência torna a repetição segura, mas essa janela
+  ainda não possui um cenário automatizado dedicado.
 
 Os detalhes de criação da sessão, eventos consumidos e testes locais estão no
 [plano da integração com Stripe](providers/stripe.md).

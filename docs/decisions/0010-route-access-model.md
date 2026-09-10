@@ -159,8 +159,9 @@ aplicada por `operationId`, e as comparações percorrem todas as chaves ativas 
 tempo constante. O OpenAPI expõe o esquema para uso pelo Swagger UI. Testes
 cobrem rotação, configuração inválida, acesso público, negação por padrão e
 ausência de chamada ao caso de uso quando a autenticação falha. A documentação
-HTTP permanece pública enquanto habilitada; o comando `api` ainda não
-diferencia ambientes para essa configuração.
+HTTP segue a evolução registrada no [ADR 0016](0016-http-surface-and-client-identity.md):
+fica desligada por padrão e, quando habilitada fora de `development`, exige uma
+`X-API-Key` válida.
 
 ## Referências
 

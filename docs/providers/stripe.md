@@ -166,12 +166,13 @@ validado sem presumir que a conclusão do Checkout significa liquidação.
 - Aplicar o mesmo evento duas vezes sem repetir efeitos.
 - Oferecer Pix na Checkout Session e validar `processing` até `paid` quando o
   evento assíncrono de sucesso chega.
-
-### Planejados para a Fase 4
-
 - Aceitar o webhook de forma durável enquanto RabbitMQ estiver indisponível e
-  publicá-lo quando o broker voltar.
-- Encerrar API, relay ou worker em pontos críticos sem perder o evento.
+  publicar o backlog quando o broker voltar.
+- Interromper relay e consumer nas janelas entre persistência, publicação e ack
+  sem perder o evento nem repetir seu efeito financeiro.
+
+### Pendente na Fase 4
+
 - Testar no sandbox o caminho de expiração/falha do Pix com dados reproduzíveis.
 
 A Stripe CLI encaminha eventos ao ambiente local:
