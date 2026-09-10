@@ -65,6 +65,10 @@ func TestQueueDepthsFailsOnAnUndeclaredQueue(t *testing.T) {
 // hold the metrics sampler and worker shutdown indefinitely.
 func TestInspectionChannelKeepsDeadlineForTheWholeOperation(t *testing.T) {
 	connection := openTestBroker(t)
+	// This test deliberately expires the transport deadline. The first AMQP
+	// close handshake may therefore return that expected timeout; consume it
+	// here so the shared cleanup only verifies that Close is idempotent.
+	defer func() { _ = connection.Close() }()
 	prepareBroker(t, connection, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
