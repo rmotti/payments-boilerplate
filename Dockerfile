@@ -13,7 +13,8 @@ ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 
-RUN CGO_ENABLED=0 go build -trimpath \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath \
     -ldflags="-s -w -X github.com/rmotti/payments-boilerplate/internal/platform/buildinfo.Version=${VERSION} -X github.com/rmotti/payments-boilerplate/internal/platform/buildinfo.Commit=${COMMIT} -X github.com/rmotti/payments-boilerplate/internal/platform/buildinfo.BuildTime=${BUILD_TIME}" \
     -o /out/api ./cmd/api && \
     CGO_ENABLED=0 go build -trimpath \
@@ -35,4 +36,3 @@ COPY db/migrations /app/db/migrations
 EXPOSE 8080
 USER nonroot:nonroot
 CMD ["/app/api"]
-

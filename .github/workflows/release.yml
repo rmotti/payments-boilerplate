@@ -127,6 +127,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: true
           sbom: true
+          cache-from: type=gha,scope=payments-boilerplate
+          cache-to: type=gha,scope=payments-boilerplate,mode=max
           build-args: |
             VERSION=${{ github.ref_name }}
             COMMIT=${{ github.sha }}
