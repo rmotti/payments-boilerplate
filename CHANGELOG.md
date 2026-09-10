@@ -9,6 +9,12 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Comando `sandbox` e alvos `make sandbox-*` para criar um Checkout real no
+  modo de teste, emitir fixtures Stripe assinadas e correlacionadas ao pedido,
+  aguardar os estados de inbox/outbox/consumer e limpar somente dados locais
+  marcados pelo próprio utilitário. Os cenários versionados cobrem cartão pago,
+  Pix em processamento, sucesso/falha assíncrona e sessão expirada, com bloqueio
+  de ambiente remoto e credencial `sk_live_...`.
 - Visão, escopo, arquitetura e roadmap iniciais.
 - Contrato conceitual da API headless.
 - Métricas prioritárias do produto e da operação.

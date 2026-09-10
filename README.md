@@ -34,7 +34,7 @@ ficam em [docs/roadmap.md](docs/roadmap.md), que é a fonte de verdade.
 | Fase 1 — Fundação executável | Concluída | API, banco, migrations, observabilidade, CI e deploy documentado |
 | Fase 2 — Primeiro pagamento vertical | Concluída | API key, pedido idempotente, consulta e Stripe Checkout em BRL |
 | Fase 3 — Confirmação assíncrona confiável | Concluída | Webhook, inbox/outbox, relay, consumer, inspeção, replay seguro e Pix |
-| Fase 4 — Qualidade para publicação | Em andamento | Hardening, testes de falha e métricas concluídos; sandbox, checklist operacional e revisão final de segurança pendentes |
+| Fase 4 — Qualidade para publicação | Em andamento | Hardening, testes de falha, métricas e sandbox concluídos; checklist operacional e revisão final de segurança pendentes |
 
 Um pagamento concluído na Stripe agora chega ao estado local: o webhook
 verificado é gravado na inbox, publicado pelo relay e aplicado pelo consumer,
@@ -60,6 +60,11 @@ make infra-up
 make migrate-up
 make generate
 ```
+
+Para uma jornada guiada que cria um Checkout real de teste, emite fixtures
+assinadas de cartão/Pix, aguarda o pipeline e limpa apenas os dados locais
+criados pelo próprio utilitário, consulte o
+[guia de sandbox reproduzível](docs/sandbox.md).
 
 Copie a saída do `openssl` para `INTEGRATION_API_KEYS` no `.env`. A variável
 aceita uma ou mais chaves separadas por vírgula para permitir rotação. Cada
@@ -325,6 +330,7 @@ o Swagger UI representa no diagrama.
 - [Arquitetura](docs/architecture.md)
 - [Contrato da API](docs/api.md)
 - [Integração com Stripe](docs/providers/stripe.md)
+- [Sandbox reproduzível](docs/sandbox.md)
 - [Convenções do projeto](docs/conventions.md)
 - [Fluxo de encerramento de entregas](docs/delivery-workflow.md)
 - [Versionamento](docs/versioning.md)

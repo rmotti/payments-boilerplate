@@ -48,8 +48,8 @@ func validateDatabaseCleanupURL(raw string) error {
 	if !hasPassword || password != "payments_local" {
 		return errors.New("E2E_DATABASE_URL must use the documented local password")
 	}
-	if parsed.Port() != "5432" && parsed.Port() != "55432" {
-		return errors.New("E2E_DATABASE_URL must use the documented local or CI port")
+	if parsed.Port() != "5432" && parsed.Port() != "55432" && parsed.Port() != "55433" {
+		return errors.New("E2E_DATABASE_URL must use a documented local, CI or isolated validation port")
 	}
 	if strings.TrimPrefix(parsed.EscapedPath(), "/") != "payments" {
 		return errors.New("E2E_DATABASE_URL must select the documented payments database")
@@ -78,8 +78,8 @@ func validateRabbitCleanupURL(raw string) error {
 	if !hasPassword || password != "payments_local" {
 		return errors.New("E2E_RABBITMQ_URL must use the documented local password")
 	}
-	if parsed.Port() != "5672" {
-		return errors.New("E2E_RABBITMQ_URL must use the documented AMQP port")
+	if parsed.Port() != "5672" && parsed.Port() != "5673" {
+		return errors.New("E2E_RABBITMQ_URL must use a documented local or isolated validation port")
 	}
 	if parsed.Path != "" && parsed.Path != "/" {
 		return errors.New("E2E_RABBITMQ_URL must select the documented root vhost")
@@ -100,6 +100,11 @@ func TestCleanupTargetValidation(t *testing.T) {
 	rabbitURL := "amqp://payments:payments_local@localhost:5672/"
 	if err := validateCleanupTargets("YES", databaseURL, rabbitURL); err != nil {
 		t.Fatalf("documented local targets rejected: %v", err)
+	}
+	isolatedDatabase := "postgres://payments:payments_local@127.0.0.1:55433/payments?sslmode=disable"
+	isolatedRabbit := "amqp://payments:payments_local@127.0.0.1:5673/"
+	if err := validateCleanupTargets("YES", isolatedDatabase, isolatedRabbit); err != nil {
+		t.Fatalf("isolated validation targets rejected: %v", err)
 	}
 
 	tests := []struct {

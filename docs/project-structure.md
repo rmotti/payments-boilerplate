@@ -5,7 +5,7 @@ pacotes devem depender do dominio e dos casos de uso, nunca no sentido inverso.
 
 ```text
 api/           contrato OpenAPI e configuracao do gerador
-cmd/           pontos de entrada de api, worker e migrations
+cmd/           pontos de entrada de api, worker, migrations e sandbox local
 db/            migrations, queries SQL e configuracao do sqlc
 deployments/   arquivos especificos de ambientes de implantacao
 docs/          arquitetura, decisoes e guias do projeto
