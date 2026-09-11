@@ -9,6 +9,11 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Checklist operacional consolidado para implantação e operação da série
+  `0.1.x`, com migrations, readiness, alertas, backups e restauração, expurgo
+  supervisionado, rotação de credenciais, incidentes, replay/DLQ e rollback.
+- Revisão de segurança pré-`0.1.0` auditável, com validação do canal privado de
+  vulnerabilidades, scanners do GitHub, dependências e controles do runtime.
 - Comando `sandbox` e alvos `make sandbox-*` para criar um Checkout real no
   modo de teste, emitir fixtures Stripe assinadas e correlacionadas ao pedido,
   aguardar os estados de inbox/outbox/consumer e limpar somente dados locais
@@ -142,6 +147,9 @@ e o projeto segue [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- GitHub Actions fixadas por SHA imutável; servidor HTTP com limite explícito de
+  32 KiB para headers; `X-Correlation-ID` fornecido pelo cliente restrito a um
+  token ASCII opaco, limitado e sem formato conhecido de secret.
 - Documentação sincronizada com o estado real da Fase 4: roadmap e README agora
   registram rate limiting, revisão de dados sensíveis e fluxo de contribuição
   como concluídos; arquitetura, integração Stripe e estrutura de testes deixam

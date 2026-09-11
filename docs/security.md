@@ -225,6 +225,12 @@ verificação automatizada é E8b e está implementada.
   PostgreSQL e RabbitMQ; nome, e-mail, telefone, endereço ou dados de cobrança;
   resposta integral do provedor; URL de Checkout completa.
 - Métricas não usam IDs, secrets ou valores de entrada livre como labels.
+- `X-Correlation-ID` fornecido pelo cliente só é reaproveitado quando tem forma
+  de token ASCII opaco, até 128 bytes, e não contém um padrão conhecido de
+  secret. Texto livre ou suspeito é substituído por um identificador aleatório
+  antes de alcançar logs; no webhook, isso ocorre também antes de persistir a
+  correlação na outbox e publicá-la no broker. Mesmo com essa defesa, não use
+  dados pessoais ou credenciais como identificador de correlação.
 - Nenhuma query da API operacional pode selecionar `raw_payload` ou `payload`.
   As queries em `db/queries/operations.sql` listam colunas explicitamente por
   esse motivo; isso é invariante testada em
@@ -337,7 +343,7 @@ confidenciais identificados no inventário
   formatada como segredo (por exemplo, contendo `token=` por acidente) vazar
   por esse campo.
 
-**O que fica explicitamente para depois de E8b:**
+**O que fica explicitamente para depois da `0.1.0`:**
 
 - Minimização ativa na origem — por exemplo, recusar ou truncar uma chave de
   idempotência que pareça conter dados pessoais ou um segredo antes de
@@ -350,17 +356,18 @@ confidenciais identificados no inventário
   expurgo automático, pelo mesmo motivo geral da seção 4 do
   [ADR 0017](decisions/0017-sensitive-data-and-error-handling.md): falta
   métrica de volume e teste de sistema que prove que o expurgo não atinge
-  tentativas ainda em curso. Esse trabalho pertence a E9 ou pós-`0.1.0`
-  (`E8A-9`, `E8A-6`, `E8A-7`).
-- Um guia operacional consolidado de purga (runbook) e a purga automatizada
-  continuam fora do escopo de E8b; ver a seção "Backlog oficial" abaixo.
+  tentativas ainda em curso. Esse trabalho permanece pós-`0.1.0` (`E8A-9` e
+  `E8A-7`).
+- O guia operacional consolidado da `0.1.0` documenta a execução supervisionada
+  do expurgo de payloads; veja o
+  [checklist operacional](deployment/operations.md#expurgo-supervisionado).
 
 ## Modelo de ameaça
 
 | Atacante | Alcance | O projeto opõe | O projeto não opõe |
 | --- | --- | --- | --- |
 | Integrador hostil, com chave válida | Toda a API operacional da instalação | Payloads fora das queries operacionais; sanitização de `last_error`; rate limiting | Segregação por tenant — uma chave válida vê todos os eventos |
-| Terceiro na internet | Health e webhook; alcança a fronteira HTTP das demais rotas, mas não passa da autenticação | Verificação de `Stripe-Signature` sobre os bytes originais antes de desserializar; limite de corpo; allowlist de rotas públicas ([ADR 0010](decisions/0010-route-access-model.md)); documentação desligada por padrão e autenticada fora de development, headers de segurança e ausência de CORS ([ADR 0016](decisions/0016-http-surface-and-client-identity.md)); rate limiting | Resposta de erro provocada por corpo acima do limite; ataque volumétrico |
+| Terceiro na internet | Health e webhook; alcança a fronteira HTTP das demais rotas, mas não passa da autenticação | Verificação de `Stripe-Signature` sobre os bytes originais antes de desserializar; limites de corpo e de headers; allowlist de rotas públicas ([ADR 0010](decisions/0010-route-access-model.md)); documentação desligada por padrão e autenticada fora de development, headers de segurança e ausência de CORS ([ADR 0016](decisions/0016-http-surface-and-client-identity.md)); rate limiting | Resposta de erro provocada por corpo acima do limite; ataque volumétrico |
 | Pessoa com acesso operacional | Banco, broker, logs e traces | Minimização: payloads fora de logs, traces e mensagens; evento completo apenas no PostgreSQL | Mascaramento por coluna; cifragem em nível de aplicação; auditoria de leitura no banco |
 | Provedor comprometido ou entrega capturada | Injeção de eventos forjados com efeito financeiro | `STRIPE_WEBHOOK_SECRET` como secret; rotação documentada; inbox preserva os bytes recebidos para auditoria posterior | Segunda prova de origem |
 
@@ -406,7 +413,7 @@ esta seção.
 | E8A-3 | Teste negativo com valores sentinela sobre logs, traces, `last_error` e respostas públicas | E8b | Concluído — inclui saída fatal de processo, logs internos, traces, gravação e leitura legada de `last_error`, e respostas HTTP públicas |
 | E8A-4 | Teste que impede qualquer query operacional de selecionar `raw_payload` ou `payload` | E3/E8b | Concluído — `internal/adapters/postgres/repositories/operations_sql_test.go` |
 | E8A-5 | Procedimento de rotação de `INTEGRATION_API_KEYS`, `STRIPE_SECRET_KEY` e `STRIPE_WEBHOOK_SECRET` | E8b | Concluído — seção "Rotação de credenciais" acima |
-| E8A-6 | Expurgo no checklist operacional, com periodicidade recomendada | E9 | Pendente — fora do escopo de E8b |
+| E8A-6 | Expurgo no checklist operacional, com periodicidade recomendada | E9 | Concluído — execução supervisionada semanal no [checklist operacional](deployment/operations.md#expurgo-supervisionado) |
 | E8A-7 | Reavaliar expurgo automatizado depois das métricas de E5 | Pós-0.1.0 | Pendente — fora do escopo de E8b |
-| E8A-8 | Canal privado de vulnerabilidades ativo e testado | E11, bloqueia a `0.1.0` | Pendente — fora do escopo de E8b |
-| E8A-9 | Definir minimização e retenção automática para URLs de Checkout e chaves de idempotência | E8b/E9 | Parcial — minimização em logs/traces concluída (seção acima); expurgo automático/temporizado permanece para E9 |
+| E8A-8 | Canal privado de vulnerabilidades ativo e testado | E11, bloqueia a `0.1.0` | Concluído — API do GitHub confirmou `private-vulnerability-reporting.enabled=true` em 2026-09-11; nenhum advisory de teste foi criado ([revisão E11](security-review-0.1.0.md#canal-privado-e-estado-do-github)) |
+| E8A-9 | Definir minimização e retenção automática para URLs de Checkout e chaves de idempotência | E8b/pós-0.1.0 | Parcial — minimização e responsabilidade operacional documentadas; expurgo automático/temporizado permanece pós-`0.1.0` |

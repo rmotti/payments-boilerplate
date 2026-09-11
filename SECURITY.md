@@ -36,6 +36,8 @@ O inventário completo, os prazos de retenção, o procedimento de expurgo e o
 modelo de ameaça estão em [`docs/security.md`](docs/security.md). A decisão que
 os originou está em
 [ADR 0017](docs/decisions/0017-sensitive-data-and-error-handling.md).
+A revisão de segurança que antecede a primeira release está registrada em
+[`docs/security-review-0.1.0.md`](docs/security-review-0.1.0.md).
 
 Ao reportar um problema ou abrir uma issue, não envie chaves reais, dados
 pessoais ou dados de cartão. Use apenas credenciais e cartões de sandbox nos

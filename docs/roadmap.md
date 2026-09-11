@@ -74,9 +74,9 @@ múltiplos provedores.
 - [x] Aplicar rate limiting às operações públicas e aos endpoints sujeitos a abuso.
 - [x] Desabilitar ou proteger o Swagger UI fora do ambiente de desenvolvimento.
 - [x] Revisar logs, secrets e tratamento de dados pessoais.
-- [ ] Completar o guia de implantação com um checklist operacional consolidado.
+- [x] Completar o guia de implantação com um checklist operacional consolidado.
 - [x] Criar guia de contribuição e template de pull request.
-- [ ] Fazer revisão de segurança antes da versão `0.1.0`.
+- [x] Fazer revisão de segurança antes da versão `0.1.0`.
 
 ## Depois da versão 0.1
 

@@ -205,8 +205,9 @@ permanentemente vazio é detectado antes de um incidente.
 ## Referências operacionais iniciais
 
 Os valores abaixo **não são SLA**. São pontos de partida para alertas, medidos
-em ambiente de desenvolvimento, e serão revisados com dados de produção na
-entrega E9.
+em ambiente de desenvolvimento e adotados pelo checklist operacional de E9.
+Eles serão recalibrados depois da `0.1.0`, quando houver dados de produção da
+própria implantação.
 
 | Sinal | Referência inicial | Ação sugerida |
 | --- | ---: | --- |

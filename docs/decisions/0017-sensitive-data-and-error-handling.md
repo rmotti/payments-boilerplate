@@ -6,9 +6,10 @@
   da leitura operacional, dos logs e da saída fatal dos processos; testes
   negativos com sentinelas; invariante testada
   sobre `raw_payload`/`payload`, e procedimento de rotação de credenciais).
-  Guia operacional de expurgo, expurgo automatizado e canal privado de
-  vulnerabilidades permanecem pendentes em E9/E11/pós-`0.1.0` — ver "Estado de
-  implementação" abaixo e o backlog oficial em `docs/security.md`.
+  E9 incorporou o expurgo ao checklist operacional e E11 verificou o canal
+  privado de vulnerabilidades. O expurgo automatizado permanece pós-`0.1.0` —
+  ver "Estado de implementação" abaixo e o backlog oficial em
+  `docs/security.md`.
 
 ## Contexto
 
@@ -343,12 +344,11 @@ E8b aplicou no código o que esta ADR decide:
   Checkout e chaves de idempotência, publicados em `docs/security.md`.
 
 O procedimento de expurgo de payloads já existia em `docs/security.md` antes
-de E8b (seção "Política de retenção") e não foi alterado por esta etapa. Ele
-ainda não é referenciado por um guia operacional dedicado, porque esse guia é
-entrega de E9 e não existe nesta versão; a purga automatizada/temporizada de
-`payment_attempts.checkout_url` e das chaves de idempotência também permanece
-para E9 ou pós-`0.1.0`, como registrado no backlog oficial de
-`docs/security.md` (`E8A-6`, `E8A-7`, `E8A-9`).
+de E8b (seção "Política de retenção") e não foi alterado por essa etapa. E9 o
+incorporou ao checklist operacional com periodicidade semanal recomendada. A
+purga automatizada/temporizada de `payment_attempts.checkout_url` e das chaves
+de idempotência permanece pós-`0.1.0`, como registrado no backlog oficial de
+`docs/security.md` (`E8A-7` e `E8A-9`).
 
 Os itens derivados usam identificadores estáveis e estão registrados no backlog
 oficial de `docs/security.md`; não há alegação de que já existam issues externas.

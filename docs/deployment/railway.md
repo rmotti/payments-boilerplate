@@ -5,6 +5,11 @@ do RabbitMQ em um único projeto Railway. A configuração fica no painel porque
 API e worker compartilham o mesmo `Dockerfile`, mas possuem comandos e variáveis
 diferentes.
 
+Para promover e operar o ambiente, use também o
+[checklist operacional consolidado](operations.md). Ele cobre migrations,
+readiness, alertas, backups e restauração, expurgo, rotação de credenciais,
+incidentes, replay/DLQ e rollback.
+
 ## Topologia
 
 | Serviço | Origem | Comando | Exposição |

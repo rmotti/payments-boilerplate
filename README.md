@@ -12,9 +12,10 @@ O projeto não é um gateway, uma instituição financeira
 nem um sistema que captura ou armazena dados completos de cartão.
 
 > [!IMPORTANT]
-> As Fases 0 a 3 estão concluídas e a Fase 4 está em andamento, mas ainda não
-> existe uma versão pronta para produção. O uso deste código não garante
-> conformidade com PCI DSS, LGPD ou qualquer outra obrigação regulatória.
+> As Fases 0 a 4 do roadmap inicial estão concluídas, mas a versão `0.1.0`
+> ainda depende da validação final da CI e da publicação da release. O uso
+> deste código não garante conformidade com PCI DSS, LGPD ou qualquer outra
+> obrigação regulatória.
 
 > [!WARNING]
 > A aplicação **armazena dados pessoais**. Cada evento da Stripe é gravado na
@@ -34,7 +35,7 @@ ficam em [docs/roadmap.md](docs/roadmap.md), que é a fonte de verdade.
 | Fase 1 — Fundação executável | Concluída | API, banco, migrations, observabilidade, CI e deploy documentado |
 | Fase 2 — Primeiro pagamento vertical | Concluída | API key, pedido idempotente, consulta e Stripe Checkout em BRL |
 | Fase 3 — Confirmação assíncrona confiável | Concluída | Webhook, inbox/outbox, relay, consumer, inspeção, replay seguro e Pix |
-| Fase 4 — Qualidade para publicação | Em andamento | Hardening, testes de falha, métricas e sandbox concluídos; checklist operacional e revisão final de segurança pendentes |
+| Fase 4 — Qualidade para publicação | Concluída | Hardening, testes de falha, métricas, sandbox, checklist operacional e revisão de segurança |
 
 Um pagamento concluído na Stripe agora chega ao estado local: o webhook
 verificado é gravado na inbox, publicado pelo relay e aplicado pelo consumer,
@@ -338,6 +339,8 @@ o Swagger UI representa no diagrama.
 - [Roadmap](docs/roadmap.md)
 - [Estrutura e responsabilidades dos diretórios](docs/project-structure.md)
 - [Deploy na Railway](docs/deployment/railway.md)
+- [Checklist operacional de implantação](docs/deployment/operations.md)
+- [Revisão de segurança pré-0.1.0](docs/security-review-0.1.0.md)
 - [Decisão arquitetural: limites do produto](docs/decisions/0001-project-boundaries.md)
 - [Decisão arquitetural: API headless](docs/decisions/0002-headless-api.md)
 - [Decisão arquitetural: Go e RabbitMQ](docs/decisions/0003-go-rabbitmq.md)
