@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,6 +29,14 @@ const (
 	// JSON documents; anything larger is rejected before it is decoded.
 	maxBodyBytes = 64 << 10
 
+	// maxHeaderBytes bounds work the standard library performs before any of
+	// the application's rate limiters can run. The API has only small scalar
+	// headers, so 32 KiB leaves ample room for tracing metadata while rejecting
+	// oversized authentication and forwarding headers early.
+	maxHeaderBytes = 32 << 10
+
+	maxCorrelationIDLength = 128
+
 	// webhookPath is the one route whose body is not written by the
 	// integrator, so its size is not ours to keep small.
 	webhookPath = "/v1/webhooks/stripe"
@@ -43,6 +52,12 @@ const (
 	// answered with 500 so the provider redelivers.
 	webhookMaxBodyBytes = 512 << 10
 )
+
+// correlationIDPattern deliberately accepts only an opaque, single-line
+// token. Correlation ids cross several trust boundaries: they are returned in
+// responses, written to logs and, for webhooks, persisted in the outbox and
+// sent through RabbitMQ. Free-form text does not belong on any of them.
+var correlationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 
 type correlationKey struct{}
 
@@ -186,6 +201,7 @@ func newServer(cfg Config, logger *zap.Logger, mux *http.ServeMux, limiters *rat
 		server: &http.Server{
 			Addr:              cfg.Address,
 			Handler:           handler,
+			MaxHeaderBytes:    maxHeaderBytes,
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       10 * time.Second,
 			WriteTimeout:      15 * time.Second,
@@ -241,13 +257,18 @@ func serveError(err error) error {
 func correlationMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		correlationID := strings.TrimSpace(r.Header.Get(correlationHeader))
-		if correlationID == "" || len(correlationID) > 128 {
+		if !validCorrelationID(correlationID) {
 			correlationID = newCorrelationID()
 		}
 		w.Header().Set(correlationHeader, correlationID)
 		ctx := context.WithValue(r.Context(), correlationKey{}, correlationID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func validCorrelationID(value string) bool {
+	return value != "" && len(value) <= maxCorrelationIDLength &&
+		correlationIDPattern.MatchString(value) && errsanitize.Sanitize(value) == value
 }
 
 func accessLogMiddleware(logger *zap.Logger, next http.Handler) http.Handler {

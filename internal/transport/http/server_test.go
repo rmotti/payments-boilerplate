@@ -57,6 +57,68 @@ func TestRunServesInjectedListener(t *testing.T) {
 	}
 }
 
+func TestServerBoundsRequestHeaders(t *testing.T) {
+	t.Parallel()
+
+	server := New(Config{ShutdownTimeout: time.Second}, zap.NewNop(), newHealthOnlyHandler(), nil)
+	if server.server.MaxHeaderBytes != maxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", server.server.MaxHeaderBytes, maxHeaderBytes)
+	}
+}
+
+func TestCorrelationMiddlewareRejectsFreeFormAndSecretValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"contains whitespace",
+		"whsec_0123456789abcdef",
+		"sk_live_0123456789abcdef",
+		strings.Repeat("a", maxCorrelationIDLength+1),
+	}
+	for _, supplied := range tests {
+		supplied := supplied
+		t.Run(supplied, func(t *testing.T) {
+			t.Parallel()
+
+			var fromContext string
+			handler := correlationMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+				fromContext = correlationIDFromContext(request.Context())
+			}))
+			request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
+			request.Header.Set(correlationHeader, supplied)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+
+			generated := recorder.Header().Get(correlationHeader)
+			if generated == "" || generated == supplied {
+				t.Fatalf("%s = %q, want a fresh opaque value", correlationHeader, generated)
+			}
+			if fromContext != generated {
+				t.Fatalf("context correlation id = %q, want response value %q", fromContext, generated)
+			}
+		})
+	}
+}
+
+func TestCorrelationMiddlewarePreservesOpaqueToken(t *testing.T) {
+	t.Parallel()
+
+	const supplied = "req_01J8M3Z7K4YH9T2V6N5P0Q1R8S"
+	handler := correlationMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		if got := correlationIDFromContext(request.Context()); got != supplied {
+			t.Errorf("context correlation id = %q, want %q", got, supplied)
+		}
+	}))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
+	request.Header.Set(correlationHeader, supplied)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if got := recorder.Header().Get(correlationHeader); got != supplied {
+		t.Fatalf("%s = %q, want %q", correlationHeader, got, supplied)
+	}
+}
+
 // TestRunReleasesTheListenerOnShutdown proves shutdown closes the socket
 // rather than leaving it bound. A composition that ends on a cancelled context
 // has to leave the port free for the next process, or the next test.

@@ -470,11 +470,12 @@ Cobertos:
 - Queda do consumer antes e depois do commit no PostgreSQL.
 - Consulta do pedido antes e depois da entrega do webhook.
 
-Pendente na Fase 4:
+Limitação residual não bloqueante da `0.1.0`:
 
 - Reproduzir o timeout depois de o provedor aceitar a operação e antes da
   persistência local. A idempotência torna a repetição segura, mas essa janela
-  ainda não possui um cenário automatizado dedicado.
+  ainda não possui um cenário automatizado dedicado e permanece como
+  endurecimento posterior ao roadmap inicial.
 
 Os detalhes de criação da sessão, eventos consumidos e testes locais estão no
 [plano da integração com Stripe](providers/stripe.md).

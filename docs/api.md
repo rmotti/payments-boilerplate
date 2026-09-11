@@ -29,7 +29,11 @@ ilustrativos e não são interpretados pelo verificador.
 
 `code` é estável e adequado a tratamento programático. `correlationId` repete o
 header `X-Correlation-ID` da resposta; o cliente pode enviá-lo na requisição
-para correlacionar seus próprios logs com os da API.
+para correlacionar seus próprios logs com os da API. Um valor fornecido precisa
+ser um token ASCII opaco de até 128 bytes, começar por caractere alfanumérico,
+conter apenas letras, números, ponto, sublinhado, dois-pontos ou hífen e não ter
+formato conhecido de secret. Caso contrário, a API o substitui por um novo
+identificador e devolve o valor efetivamente utilizado na resposta.
 
 O prefixo `/v1` identifica a primeira geração do contrato HTTP. Enquanto o
 projeto estiver na série `v0.x`, ele permanece experimental e pode sofrer
